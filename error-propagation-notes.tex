@@ -1,4 +1,4 @@
-% 编译：xelatex error-propagation-notes.tex（需要 ctex 宏包）
+% 编译：xelatex error-propagation-notes.tex（需要 ctex 宏包，编译两遍以解析引用）
 \documentclass[11pt,a4paper]{ctexart}
 \usepackage[margin=2.5cm]{geometry}
 \usepackage{amsmath,amssymb}
@@ -14,39 +14,77 @@
 \maketitle
 
 \begin{abstract}
-本文梳理近似计算中误差从器件层、电路层、架构/框架层到应用层的传播研究，总结近三年（2023--2026）的代表性工作，并提出十一个研究空白。文献信息多来自 arXiv 预印本和检索摘要，引用前需回原文核对标题、结论与数字。
+本文按“器件—电路—框架—应用”四个抽象层次，梳理近似计算中误差的产生与传播研究，总结近三年（2023--2026）的代表性工作，并提出十一个研究空白。文献信息多来自 arXiv 预印本和检索摘要，引用前需回原文核对标题、结论与数字。
 \end{abstract}
 
-\section{层次框架}
+\section{层次划分}
+
+\subsection{四个抽象层次}
+
+为避免与神经网络中的“层”混淆，下文把器件、电路、框架、应用称为\textbf{抽象层次}。划分依据是：每个层次向上一层传递什么样的误差表示。
 
 \begin{table}[h]
 \centering
 \small
 \begin{tabularx}{\textwidth}{@{}lXX@{}}
 \toprule
-层次 & 误差来源 & 向上一层传递的误差模型 \\
+抽象层次 & 包含内容与误差来源 & 向上一层传递的误差表示 \\
 \midrule
-器件层 & 电压超缩（VOS）时序错误、PVT 波动与老化、模拟存内计算（读噪声、IR-drop、ADC）、近似存储（低压 SRAM、降低 DRAM 刷新率） & 各输出位出错概率、噪声分布 \\
-电路层 & 近似加法器/乘法器、近似 softmax/exp/GELU & 误差统计矩（ER、MED、MRED、NMED、偏置、方差）或误差查找表 \\
-架构/框架层 & 加速器数据流、累加长度、累加器与部分和位宽；仿真框架 AdaPT、TFApprox、ApproxTrain、TorchAxf、TransAxx、IBM AIHWKit & 逐层误差注入或解析传播 \\
-应用层 & DNN 精度、图像 PSNR/SSIM、LLM 困惑度、鲁棒性与校准 & --- \\
+器件层 & 半导体器件：晶体管、忆阻器、存储单元；工艺偏差、阈值电压漂移、老化、忆阻器电导噪声、低电压下存储单元翻转 & 位翻转概率、延迟分布、噪声分布 \\
+电路层 & 门级与晶体管级电路、近似加法器/乘法器、近似 exp/softmax 单元、模拟矩阵向量乘（MVM）阵列；电压超缩（VOS）引起的时序错误 & 误差函数 $e(a,b)$，或误差的统计矩、概率分布 \\
+框架层 & 硬件架构：PE 阵列、数据流、累加顺序、累加器与部分和位宽、存储层次；系统框架：量化方案、算子映射、运行时近似控制 & 每个网络层输出（部分和、激活值）的误差统计 \\
+应用层 & 模型与任务：网络结构（BatchNorm、残差、非线性层、深度）及任务指标（分类精度、PSNR/SSIM、困惑度、鲁棒性） & 最终质量指标 \\
 \bottomrule
 \end{tabularx}
-\caption{近似计算的跨层误差传播链}
+\caption{近似计算的四个抽象层次}
+\label{tab:layers}
 \end{table}
+
+\paragraph{关于“框架层”的说明.}
+本文暂把硬件架构与软件系统框架合并为框架层。若研究重点在软件工具链，可拆为“架构层”与“系统框架层”两层；若研究重点在网络结构对误差的放大或抑制，也可从应用层中单列“算法/模型层”。
+
+\subsection{传播路径不是单向链}
+
+\begin{itemize}[leftmargin=*]
+  \item \textbf{旁路}：近似存储（低压 SRAM、降低 DRAM 刷新率）的错误直接改坏数据和权重，跳过电路层的运算单元，直接进入框架层。
+  \item \textbf{跨层耦合}：模拟存内计算中，器件、电路、框架三个层次在同一个阵列中实现，误差无法按层拆开分析 \cite{thuaccuracy}。
+  \item \textbf{自上而下的反馈}：硬件感知重训练、误差补偿、运行时质量监控，都是用上层信息补偿下层误差。
+\end{itemize}
+
+\subsection{误差传播的数学描述}
 
 经典误差传播定律
 \begin{equation}
 \Sigma_y = J\,\Sigma_x\,J^{\mathsf T}
 \end{equation}
-在此对应：近似单元误差的均值与协方差，经 MAC 累加、非线性层和网络深度逐层传递。对长度为 $N$ 的点积 $y=\sum_{i=1}^{N} w_i x_i$，若每次乘法的误差为 $\varepsilon_i$，均值为 $\mu$、方差为 $\sigma^2$，则
+在此对应：下层误差的均值与协方差，经 MAC 累加、非线性运算和网络深度逐层传递。对长度为 $N$ 的点积 $y=\sum_{i=1}^{N} w_i x_i$，若每次乘法的误差为 $\varepsilon_i$，均值为 $\mu$、方差为 $\sigma^2$，则
 \begin{equation}
 \mathbb{E}[\Delta y] = N\mu,\qquad
 \operatorname{Var}[\Delta y] = N\sigma^2 + \sum_{i\neq j}\operatorname{Cov}(\varepsilon_i,\varepsilon_j).
 \end{equation}
-偏置随 $N$ 线性增长，独立误差的标准差只随 $\sqrt{N}$ 增长；而误差相关时，协方差项不可忽略。这是后文空白 1、2 的出发点。
+偏置随 $N$ 线性增长，独立误差的标准差只随 $\sqrt{N}$ 增长；误差相关时，协方差项不可忽略。这是后文空白 1、2 的出发点。
 
-\section{各层代表工作}
+\subsection{研究方法维度}
+
+误差传播的分析方法与抽象层次是两个独立的维度。仿真工具不属于任何抽象层次，而属于方法维度。
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabularx}{\textwidth}{@{}lXX@{}}
+\toprule
+方法 & 代表工作 & 特点 \\
+\midrule
+蒙特卡洛仿真 & AdaPT \cite{adapt}、TFApprox/ProxSim、ApproxTrain \cite{approxtrain}、TorchAxf、TransAxx \cite{transaxx}、IBM AIHWKit & 准确但慢；基于行为级查找表注入误差 \\
+解析传播 & 近似乘法器误差矩模型 \cite{amierr}、统计分布传播 \cite{ubcprop}、IBM tile 解析模型 \cite{ibmtile} & 快，但大多假设误差独立、函数近似线性 \\
+学习型预测 & LEVAX \cite{levax}、TEVoT \cite{tevot} & 快且准，但需要训练数据，泛化性未知 \\
+\bottomrule
+\end{tabularx}
+\caption{误差传播的研究方法}
+\label{tab:methods}
+\end{table}
+
+\section{各层次代表工作}
 
 \subsection{器件层 $\rightarrow$ 电路层}
 \begin{itemize}[leftmargin=*]
@@ -56,7 +94,7 @@
   \item 小结：器件到电路的误差模型主要集中在 2017--2020 年，近三年明显变少。
 \end{itemize}
 
-\subsection{电路层 $\rightarrow$ 应用层（数字近似）}
+\subsection{电路层 $\rightarrow$ 框架层与应用层（数字近似）}
 \begin{itemize}[leftmargin=*]
   \item Approximate Multiplier Induced Error Propagation in DNNs（2025）\cite{amierr}：把近似乘法器误差的统计矩解析映射为 GEMM 输出失真（Frobenius 范数，闭式表达式）；发现\textbf{偏置比方差更主导}；预测失真与 ImageNet 级网络的精度下降高度相关，并在 FPGA 上验证。
   \item DNN 加速器硬件近似综述（2022）\cite{hwapproxsurvey}：在 600 个近似乘法器上，\textbf{方差与 RMS 误差}是 CNN 推理最重要的指标，与上一条结论存在矛盾。
@@ -65,10 +103,10 @@
   \item 阵列乘法器误差分析 \cite{arraymult}：MED/MRED 会把与输入相关的大误差平均掉。
   \item EMEI（ISCAS 2024）：基于误差率矩阵的误差注入，用于快速挑选 CNN 加速器的近似乘法器 \cite{emei}。
   \item 层间异构近似乘法器与信息瓶颈理论（2026）\cite{ibmult}：报告节能最高 44.75\%。
-  \item 近似乘法器重训练的梯度估计方法（2025）\cite{gradest}。
+  \item 近似乘法器重训练的梯度估计方法（2025）\cite{gradest}：属于自上而下的反馈补偿。
 \end{itemize}
 
-\subsection{器件/电路层 $\rightarrow$ 应用层（模拟存内计算）}
+\subsection{器件层到框架层的耦合（模拟存内计算）}
 \begin{itemize}[leftmargin=*]
   \item IBM Tile-circuit 模型（2025）\cite{ibmtile}：解析建模交叉阵列寄生参数、运放与 ADC 非理想、读噪声；用高斯噪声做硬件感知训练能抵抗 ADC 量化和读噪声，但\textbf{对 IR-drop 效果差}，因为 IR-drop 是非线性的，且依赖所有并行输入。
   \item Rasch 等（Nature Communications 2023）\cite{rasch2023}：输入/输出噪声比权重噪声对精度的影响更大。
@@ -77,35 +115,56 @@
 
 \subsection{框架层}
 \begin{itemize}[leftmargin=*]
-  \item AdaPT（TCAD 2022）\cite{adapt}、TFApprox/ProxSim、ApproxTrain（GPU 比 CPU 快 2500 倍以上，支持训练）\cite{approxtrain}、TorchAxf（2024，12 个模型）、TransAxx（2024，ViT，用 MCTS 搜索近似配置）\cite{transaxx}。
-  \item 共同点：基于行为级查找表的误差注入（本质是蒙特卡洛仿真），不做解析传播。
+  \item 现有工作大多把框架层当作误差注入的载体：仿真器在乘法器层面注入误差，再在 DNN 框架中前向传播（见表~\ref{tab:methods}）。
+  \item TransAxx（2024）\cite{transaxx} 在 ViT 上用 MCTS 搜索各网络层的近似配置，是少数把设计空间探索与误差评估结合的工作。
+  \item AxCore（MICRO 2025）\cite{axcore} 把量化与近似浮点乘法结合，并在架构中加入误差补偿。
+  \item 数据流、累加顺序、累加器与部分和位宽对误差传播的影响，在检索到的文献中几乎没有被单独分析。
 \end{itemize}
 
-\subsection{Transformer 与大语言模型}
+\subsection{应用层：Transformer 与大语言模型}
 \begin{itemize}[leftmargin=*]
   \item 近似 softmax/exp：SoftEx \cite{softex}、VEXP \cite{vexp}、ConSmax \cite{consmax}、QuAKE \cite{quake}、存内计算中的查找表 softmax \cite{cimsoftmax}。
-  \item 近似乘法：L-Mul \cite{lmul}、AxCore（MICRO 2025，量化感知近似 GEMM 加误差补偿）\cite{axcore}。
-  \item 共同点：\textbf{只报告端到端精度，没有逐层误差传播分析}。
+  \item 近似乘法：L-Mul \cite{lmul}、AxCore \cite{axcore}。
+  \item 共同点：\textbf{只报告端到端精度，没有逐网络层的误差传播分析}。
 \end{itemize}
 
 \subsection{综述}
 \begin{itemize}[leftmargin=*]
-  \item Approximate Computing Survey Part I/II \cite{acsurvey1,acsurvey2}：多数研究只针对单一抽象层，跨层与端到端系统研究不足；缺少有代表性的基准应用与数据集。
+  \item Approximate Computing Survey Part I/II \cite{acsurvey1,acsurvey2}：多数研究只针对单一抽象层次，跨层与端到端系统研究不足；缺少有代表性的基准应用与数据集。
   \item 面向数字信号处理的近似计算综述（《电子与信息学报》2024 年第 5 期）\cite{dspsurvey}。
 \end{itemize}
 
 \section{研究空白}
 
+按所在抽象层次分组；跨越多个层次的问题归入“跨层”。
+
+\subsection{器件层与电路层}
 \begin{enumerate}[leftmargin=*,label=\textbf{\arabic*.}]
+  \item \textbf{器件层误差模型陈旧且与 DNN 脱节。} VOS 时序误差模型集中在 2017--2020 年，以图像处理为主；面向 DNN/LLM 加速器、计入老化与温度、与输入相关的时序误差传播模型很少。
+  \item \textbf{模拟存内计算中的非线性、依赖输入的误差。} IR-drop 无法用加性高斯噪声描述，需要能处理数据相关、非线性误差的传播方法及相应的训练补偿方法。
+\end{enumerate}
+
+\subsection{电路层 $\rightarrow$ 框架层}
+\begin{enumerate}[leftmargin=*,label=\textbf{\arabic*.},resume]
   \item \textbf{偏置与方差谁主导？} 文献 \cite{amierr} 认为偏置主导，文献 \cite{hwapproxsurvey} 认为方差/RMS 主导。可从理论上推导：累加长度 $N$ 下偏置按 $N$、标准差按 $\sqrt{N}$ 增长，再考虑 BatchNorm 对偏置的吸收、ReLU 截断等因素，给出“何时偏置主导”的判据，并用实验验证。
   \item \textbf{误差相关性被忽略。} 解析模型大多假设各次 MAC 的误差独立，但近似乘法器的误差是操作数的确定性函数，会与权重和激活分布相关。需要协方差感知的传播模型（完整的 $J\Sigma J^{\mathsf T}$），以及按真实数据分布计算的误差统计矩（WMED 思路的推广）。
-  \item \textbf{非线性层中的误差传播缺少分析。} softmax、LayerNorm、GELU、attention 中的误差传播没有解析模型；近似 GEMM 与近似 softmax 叠加后的交互效应尚未研究。
-  \item \textbf{多误差源的耦合。} 量化、近似运算、器件噪声、VOS 时序错误基本分开研究。需要统一的联合误差模型，研究它们何时线性叠加、何时相互放大或抵消。
-  \item \textbf{器件层模型陈旧且与 DNN 脱节。} VOS 时序误差模型集中在 2017--2020 年，以图像处理为主；面向 DNN/LLM 加速器、计入老化与温度、与输入相关的时序误差传播模型很少。
-  \item \textbf{模拟存内计算中的非线性、依赖输入的误差。} IR-drop 无法用加性高斯噪声描述，需要能处理数据相关、非线性误差的传播方法及相应的训练补偿方法。
-  \item \textbf{框架层缺少架构因素和解析传播。} 现有仿真器只在乘法器层面注入误差，忽略数据流、累加顺序、累加器与部分和位宽；且均依赖仿真，解析传播模型尚未集成进设计空间探索。
-  \item \textbf{LLM 自回归解码中的跨 token 误差累积。} 近似硬件引入的误差经 KV cache 逐 token 累积，长文本生成中误差如何增长尚无研究。
+\end{enumerate}
+
+\subsection{框架层}
+\begin{enumerate}[leftmargin=*,label=\textbf{\arabic*.},resume]
+  \item \textbf{架构因素缺失，解析传播未进入设计空间探索。} 现有仿真器只在乘法器层面注入误差，忽略数据流、累加顺序、累加器与部分和位宽；且均依赖仿真，解析传播模型尚未集成进设计空间探索。
   \item \textbf{训练中的误差传播。} 近似硬件上反向传播的梯度误差如何传播、如何影响收敛，理论很少（ApproxTrain 与梯度估计方法只是起点）。
+\end{enumerate}
+
+\subsection{应用层}
+\begin{enumerate}[leftmargin=*,label=\textbf{\arabic*.},resume]
+  \item \textbf{非线性层中的误差传播缺少分析。} softmax、LayerNorm、GELU、attention 中的误差传播没有解析模型；近似 GEMM 与近似 softmax 叠加后的交互效应尚未研究。
+  \item \textbf{LLM 自回归解码中的跨 token 误差累积。} 近似硬件引入的误差经 KV cache 逐 token 累积，长文本生成中误差如何增长尚无研究。
+\end{enumerate}
+
+\subsection{跨层}
+\begin{enumerate}[leftmargin=*,label=\textbf{\arabic*.},resume]
+  \item \textbf{多误差源的耦合。} 量化、近似运算、器件噪声、VOS 时序错误基本分开研究。需要统一的联合误差模型，研究它们何时线性叠加、何时相互放大或抵消。
   \item \textbf{引入经典不确定性传播方法。} 一阶矩传播、无迹变换、多项式混沌展开等方法几乎未被用于跨层近似误差估计；相比蒙特卡洛仿真，可能带来数量级的加速。
   \item \textbf{基准与评价指标。} 缺少统一的跨层基准（相同器件模型、电路库与应用集）；应用层指标除精度外，还应覆盖校准、鲁棒性和 LLM 生成质量。
 \end{enumerate}
