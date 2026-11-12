@@ -7,169 +7,137 @@
 \usepackage[hidelinks]{hyperref}
 \usepackage{xurl}
 
-\title{近似计算跨层误差传播：FPGA 实验方案}
+\title{跨层误差传播模型：实验方案}
 \date{2026年11月12日}
 
 \begin{document}
 \maketitle
 
 \begin{abstract}
-本方案利用 ZCU102 与 ZCU104 两块 FPGA 开发板，按“器件—电路—框架—应用”四个抽象层次，分别实测误差的产生与传播，并验证跨层组合模型的预测精度。FPGA 在本研究中的定位是误差行为的真实测量与快速验证平台，不用于论证近似计算的功耗收益。文中板卡参数凭记忆给出，实施前请以 ZCU102 用户手册（UG1182）和 ZCU104 用户手册（UG1267）为准。
+本方案以“注入层 $\times$ 观测层”矩阵为主线，检验跨层误差传播模型的四个研究问题：接口充分性（R1）、算子准确性（R2）、组合是否成立（R3）、掩蔽发生在哪里（R4）。误差源（位翻转、近似乘法器、累加器截断）只用来驱动模型。端到端验证全部在 ZCU102 上进行，ZCU104 只用于单元级研究与跨芯片对比。板卡参数请以 UG1182（ZCU102）与 UG1267（ZCU104）为准。
 \end{abstract}
 
 \section{总体安排}
-
 \begin{table}[h]
 \centering
 \small
-\begin{tabularx}{\textwidth}{@{}lXX@{}}
+\begin{tabularx}{\textwidth}{@{}lXl@{}}
 \toprule
-阶段 & 内容 & 平台 \\
+阶段 & 内容 & 回答 \\
 \midrule
-0 & 环境准备与安全检查 & 两块板 \\
-1 & 器件层：超频/降压下的时序错误表征 & ZCU104 \\
-2 & 电路层：近似乘法器误差表征；近似误差与时序错误的叠加 & ZCU104 \\
-3 & 框架层：逐层误差传播测量 & ZCU102 \\
-4 & 应用层：端到端精度测量 & ZCU102 \\
-5 & 跨层组合模型验证 & ZCU102 + 主机 \\
-6 & 两颗芯片对比 & 两块板 \\
+0 & 环境、参考模型、数制约定落地 & — \\
+1 & 真值基础设施：逐比特仿真引擎、ZCU102 加速器与注入逻辑 & — \\
+2 & 单个算子表征与验证：$\mathcal P_{12}$、$\mathcal P_{23}$、$\mathcal P_{34}$ & R2 \\
+3 & 注入层 $\times$ 观测层矩阵：组合预测 vs 端到端 & R3 \\
+4 & 接口充分性消融 & R1 \\
+5 & 掩蔽与增益分解 & R4 \\
+6（可选） & 物理误差源：同板超频引起的时序违例；跨芯片对比 & 扩展 \\
 \bottomrule
 \end{tabularx}
-\caption{实验阶段与平台分工}
+\caption{实验阶段}
 \end{table}
 
-分工理由：ZCU102（XCZU9EG，DSP 约 2520、LUT 约 274K）资源更多，用于主加速器；ZCU104（XCZU7EV）有 PYNQ 官方支持，便于用 Python 控制实验，且把有风险的超频、降压实验与主平台隔离。
+\paragraph{最小可行版本.} 阶段 0--5 先只用 $S_2$（近似乘法器）与 $S_3$（累加器截断）、以仿真引擎为真值完成一轮；再加入 $S_1$（位翻转）与硬件引擎。
 
-\section{阶段 0：环境准备与安全检查}
-
+\section{阶段 0：环境与参考模型}
 \begin{enumerate}[leftmargin=*]
-  \item \textbf{工具链}：安装与 PYNQ 镜像匹配的 Vivado/Vitis 版本；ZCU104 烧写 PYNQ 官方镜像，ZCU102 使用 PetaLinux 或社区 PYNQ 镜像。
-  \item \textbf{软件依赖}：主机端安装 PyTorch、AdaPT（近似 DNN 仿真）、NumPy/Pandas；获取 EvoApprox8b 近似乘法器库（Verilog 与 C 模型）。
-  \item \textbf{温度监控}：通过片上 SYSMON 读取结温，每次测量都记录温度；确认风扇工作正常。
-  \item \textbf{电源记录}：通过 PMBus 读出并保存 VCCINT 等电源轨的默认设置，写成一键恢复脚本。
-  \item \textbf{安全规则}：
-  \begin{itemize}
-    \item 只降压，不升压；电压每步调整后先读回确认。
-    \item 结温超过设定上限（如 85\,$^\circ$C）立即停止并恢复默认频率。
-    \item 在 Zynq UltraScale+ 上，PL 的 VCCINT 与 PS 电源轨分开（以 UG 为准），因此降低 PL 电压通常不会导致 ARM 端崩溃；但仍需准备断电重启的恢复流程。
-  \end{itemize}
-  \item \textbf{数据管理}：所有测量结果按统一格式保存为 CSV（见第~\ref{sec:data} 节），原始数据不放进 git 仓库，只提交处理脚本和汇总结果。
+  \item 主机：PyTorch、AdaPT、NumPy/Pandas/SciPy；Verilator 或 Icarus Verilog；EvoApprox8b（Verilog 与 C 模型）。
+  \item ZCU102：PetaLinux 或社区 PYNQ 镜像；Vivado/Vitis HLS。
+  \item \textbf{参考模型}：按总纲的数制约定训练并量化 ResNet-20（CIFAR-10），首末层精确；导出逐层描述（算子、形状、缩放因子）。参考模型的整数推理结果在主机与板上必须逐比特一致。
+  \item \textbf{数据分布}：在参考模型上统计各网络层激活直方图 $p_x$。
 \end{enumerate}
 
-\section{阶段 1：器件层——时序错误表征（ZCU104）}
-
-\subsection{测试电路设计}
-\begin{enumerate}[leftmargin=*]
-  \item \textbf{被测单元}：一个精确的 8 位乘法器，强制用 LUT 实现（综合属性 \texttt{use\_dsp = "no"}），使其关键路径落在可控的逻辑上。
-  \item \textbf{时钟}：被测单元的输入、输出寄存器由 MMCM 产生的测试时钟驱动；MMCM 开启动态重配置（DRP），可由 ARM 端在运行时修改频率。
-  \item \textbf{激励}：输入向量存放在 BRAM 中，由 ARM 端写入。
-  \item \textbf{参考结果}：在安全频率下先运行一遍，或由 ARM 端软件计算，作为正确结果。
-  \item \textbf{结果采集}：把每个输出与参考结果的异或（错误位图）写入 BRAM，由 ARM 端读回。
-  \item \textbf{控制接口}：AXI-Lite 寄存器，负责启动、停止、设定重复次数。
-\end{enumerate}
-
-\subsection{激励设计}
-时序错误不仅取决于当前输入，还取决于\textbf{上一个输入到当前输入的跳变}。8 位乘法器的所有输入对共 $2^{16}=65536$ 种，所有“前一输入—当前输入”组合有 $2^{32}$ 种，无法穷举。采用两种激励：
+\section{阶段 1：真值基础设施}
+\subsection{逐比特仿真引擎（主机）}
 \begin{itemize}[leftmargin=*]
-  \item \textbf{双向量测试}：每个输入前插入一个固定输入（如全 0），覆盖全部 65536 种当前输入，便于与静态误差表对照。
-  \item \textbf{真实数据序列}：从 DNN 推理中截取真实的权重与激活序列，反映实际工作时的跳变分布。
+  \item 查找表乘法（每层可指定乘法器）；
+  \item 激活、权重、乘积、累加器上的位翻转注入钩子（位置、概率、种子可配置）；
+  \item 累加器截断与位宽参数；
+  \item 每个网络层输出的导出（用于 E3 真值）。
 \end{itemize}
 
-\subsection{频率扫描}
-\label{sec:freq}
+\subsection{ZCU102 加速器}
+\begin{itemize}[leftmargin=*]
+  \item INT8 脉动阵列（如 $16\times16$），HLS 或 RTL；
+  \item 乘法器以 BRAM 查找表实现（$65536\times16$ 位，约 1\,Mb），运行时整表替换；
+  \item 操作数、乘积、累加器寄存器上的注入掩码（LFSR 产生，概率与种子由 AXI-Lite 设置）；
+  \item 累加器截断位数与位宽可配置；
+  \item ARM 端逐层调度，DMA 读回每层输出。
+\end{itemize}
+
+\subsection{一致性检查}
+同一配置、同一随机种子下，仿真引擎与 ZCU102 的每层输出逐比特一致。不一致时先排查，再进入后续阶段。
+
+\section{阶段 2：单个算子（R2）}
+每个算子用\textbf{真值输入}驱动，比较预测输出与真值输出。
+
+\subsection{$\mathcal P_{12}$}
 \begin{enumerate}[leftmargin=*]
-  \item 记录 Vivado 时序报告中的标称频率 $f_0$ 和关键路径裕量。
-  \item 从 $f_0$ 开始，以 5\,MHz 为步长提高频率，直到错误率超过 50\% 或电路失效。
-  \item 每个频率点重复 $R=10$ 次，估计每个输出位的出错概率及其置信区间。
-  \item 同时记录温度和电压。
+  \item 对 4--6 个近似乘法器与精确乘法器：门级仿真逐节点注入、穷举 65536 种输入，得到 $\Delta_k(a,b)$ 与逻辑掩蔽概率。
+  \item 存储位翻转：解析计算与仿真对比（应完全一致，作为实现检查）。
+  \item 输出：E2 预测（矩与大误差率）vs 真值；按故障位置类型统计掩蔽概率。
 \end{enumerate}
 
-\subsection{电压扫描（频率扫描完成后再做）}
+\subsection{$\mathcal P_{23}$}
 \begin{enumerate}[leftmargin=*]
-  \item 固定频率为 $f_0$，通过 PMBus 将 VCCINT 从标称值以 10\,mV 为步长降低。
-  \item 每步重复第~\ref{sec:freq} 节的测量，直到出现错误后再降 3--5 步或电路失效为止。
-  \item 测量结束后执行恢复脚本。
+  \item \textbf{单层注入}：只在第 $l$ 层引入误差源，在第 $l, l+1, \dots$ 层观测误差统计。
+  \item 比较解析传播与真值：每层误差均值、方差、协方差摘要。
+  \item 分别检验：点积公式、截断偏置、舍入掩蔽、ReLU 闭式矩、BatchNorm 缩放、残差、池化。
+  \item 估计每层大误差敏感度 $s_l$（随机注入大误差，统计输出改变比例）。
 \end{enumerate}
 
-\subsection{输出}
-每个输出位的出错概率表：
-\begin{equation}
-P(\text{第 } k \text{ 位出错} \mid f,\ V,\ T,\ \text{激励类型}),
-\end{equation}
-即论文 \cite{vallero2016} 中技术域 SER 库在近似计算中的实测对应。
+\subsection{$\mathcal P_{34}$}
+在输出前若干层注入已知统计的误差，比较预测翻转概率与实测（配对统计），标定 $\kappa$。
 
-\section{阶段 2：电路层——近似乘法器误差表征（ZCU104）}
+\section{阶段 3：注入层 $\times$ 观测层矩阵（R3）}
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}lccc@{}}
+\toprule
+注入 $\backslash$ 观测 & E2 & E3（各网络层） & E4 \\
+\midrule
+$S_1$（E1） & $\checkmark$ & $\checkmark$ & $\checkmark$ \\
+$S_2$（E2） & — & $\checkmark$ & $\checkmark$ \\
+$S_3$（E3） & — & $\checkmark$ & $\checkmark$ \\
+$S_1+S_2+S_3$ & $\checkmark$ & $\checkmark$ & $\checkmark$ \\
+\bottomrule
+\end{tabular}
+\caption{注入层 $\times$ 观测层矩阵}
+\end{table}
 
-\subsection{静态近似误差}
+对每个格子比较三者：单个算子预测、组合预测、端到端真值，并报告组合误差及其理论界。理论界为 $\sum_i\bigl(\prod_{j>i}L_j\bigr)\eta_i$，其中 $\eta_i$ 来自阶段 2，$L_j$ 由解析算子在实际误差附近的数值灵敏度估计。
+
+\paragraph{配置.} 至少 20 个未参与标定的配置，覆盖从几乎无损到明显下降的范围；至少 2 个网络（ResNet-20、MobileNetV2）。
+
+\section{阶段 4：接口充分性消融（R1）}
+逐一降低接口的表示级别，测量充分性缺陷 $\eta_i$ 与组合误差的变化：
 \begin{enumerate}[leftmargin=*]
-  \item 从 EvoApprox8b 选取 4--6 个误差程度不同的 8 位近似乘法器，加上精确乘法器作为对照。
-  \item 在安全频率下穷举 65536 种输入，读回结果，得到误差函数 $e(a,b)$。
-  \item 与 C 模型逐比特比对，确认硬件实现正确。
-  \item 计算标准指标：错误率 ER、MED、MRED、偏置 $\mathbb{E}[e]$、方差 $\operatorname{Var}[e]$。
-  \item \textbf{以数据为条件的误差矩}：用真实 DNN 的权重、激活直方图对 $e(a,b)$ 加权，得到 $\mathbb{E}[e \mid \text{数据分布}]$ 和 $\operatorname{Var}[e \mid \text{数据分布}]$，并与均匀分布下的结果对比。
+  \item E1：单一总错误率 vs 按位置；
+  \item E2：均匀分布下的矩 vs 以权重为条件的矩 vs 完整查找表；
+  \item E3：对角方差 vs 分组概率仿射算术（不同分组粒度）；
+  \item 大误差：并入方差 vs 单独以 $s_l$ 处理。
 \end{enumerate}
 
-\subsection{近似误差与时序错误的叠加（关键实验）}
+\section{阶段 5：掩蔽与增益分解（R4）}
+对每个配置统计各边界的掩蔽概率、能量增益、偏置传递，并检验 $\log G_{\text{total}} = \sum_i\log G_i$ 的分解误差。重点观察：逻辑掩蔽（$\mathcal P_{12}$）、舍入与 ReLU 掩蔽（$\mathcal P_{23}$）、共模偏置在 argmax 中的掩蔽（$\mathcal P_{34}$）。
+
+\section{阶段 6（可选）：物理误差源与跨芯片对比}
 \begin{enumerate}[leftmargin=*]
-  \item 让每个近似乘法器在阶段 1 的频率/电压扫描点上运行。
-  \item 测得总误差 $e_{\text{total}}(a,b)$，分解为近似误差 $e_{\text{approx}}$ 与时序错误 $e_{\text{timing}}$。
-  \item 检验叠加关系：
-  \begin{equation}
-  \mathbb{E}[e_{\text{total}}] \overset{?}{=} \mathbb{E}[e_{\text{approx}}] + \mathbb{E}[e_{\text{timing}}],\qquad
-  \operatorname{Var}[e_{\text{total}}] \overset{?}{=} \operatorname{Var}[e_{\text{approx}}] + \operatorname{Var}[e_{\text{timing}}].
-  \end{equation}
-  \item 注意：近似乘法器的关键路径通常比精确乘法器短，同一频率下时序错误可能更少。需按各自的时序裕量对齐后再比较。
+  \item \textbf{同板超频}：在 ZCU102 上提高加速器时钟，先用时序报告找出真实关键路径（很可能在累加器而非乘法器）；测量各位出错概率作为 E1，再走完整的组合预测与端到端验证。器件数据必须来自同一块板。
+  \item \textbf{降压}（如需要）：参考 Salami 等（DSN 2020）在 ZCU102 上的流程；只降压不升压，改动前记录并可恢复 PMBus 默认值，不写入稳压器非易失存储。
+  \item \textbf{跨芯片}：在 ZCU104 上重复单元级实验，比较两颗芯片的差异（仅作示例）。
 \end{enumerate}
 
-\section{阶段 3：框架层——逐层误差传播测量（ZCU102）}
-
-\subsection{加速器设计}
-\begin{enumerate}[leftmargin=*]
-  \item \textbf{计算阵列}：INT8 脉动阵列（如 $16\times16$），用 HLS 或 RTL 实现；累加器位宽可配置（如 24 位、32 位）。
-  \item \textbf{近似乘法器的实现}，两种方案：
-  \begin{itemize}
-    \item \textbf{查找表方案（推荐先做）}：把任意近似乘法器存成 $65536 \times 16$ 位的查找表（约 1\,Mb，放在 BRAM 中），运行时替换表内容即可切换乘法器。误差行为与真实电路逐比特一致，但不反映真实电路的时序。
-    \item \textbf{真实电路方案}：例化若干种近似乘法器，用选择器按网络层切换。占用面积更大，但能与阶段 1 的超频实验结合。
-  \end{itemize}
-  \item \textbf{逐层卸载}：ARM 端按网络层依次调用加速器，每层输出经 DMA 读回，因此天然可以拿到每一层的中间结果。
-\end{enumerate}
-
-\subsection{测量步骤}
-\begin{enumerate}[leftmargin=*]
-  \item 对同一批输入，分别用精确乘法器和近似乘法器运行，得到每层输出的误差 $\Delta y^{(l)}$。
-  \item 统计每层误差的均值、方差，以及同一层内不同输出之间的协方差。
-  \item \textbf{单层注入}：只在第 $l$ 层使用近似乘法器，其余层精确，测量误差在后续各层中的放大或衰减（对应论文中只运行到层边界的 IRS 模式）。
-  \item \textbf{全层注入}：所有层都用近似乘法器，测量误差累积。
-  \item \textbf{验证点积公式}：对每层比较实测值与解析预测
-  \begin{equation}
-  \mathbb{E}[\Delta y] = N\mu,\qquad
-  \operatorname{Var}[\Delta y] = N\sigma^2 + \sum_{i\neq j}\operatorname{Cov}(\varepsilon_i,\varepsilon_j),
-  \end{equation}
-  重点检验：忽略协方差项时预测偏差有多大；BatchNorm、ReLU、残差连接对误差的影响。
-\end{enumerate}
-
-\section{阶段 4：应用层——端到端精度（ZCU102）}
-\begin{enumerate}[leftmargin=*]
-  \item \textbf{模型}：先用 CIFAR-10 上的 ResNet-20，再扩展到 MobileNetV2；INT8 量化（训练后量化或量化感知训练）。
-  \item \textbf{数据}：CIFAR-10 测试集全集；之后可扩展到 ImageNet 子集（如 1 万张）。
-  \item \textbf{指标}：Top-1 精度下降；可选：输出置信度的校准误差。
-  \item \textbf{对比}：同一配置下比较三种结果——板上实测、AdaPT 软件仿真、解析模型预测。查找表方案下前两者应逐比特一致，可作为正确性检查。
-\end{enumerate}
-
-\section{阶段 5：跨层组合模型验证}
-\begin{enumerate}[leftmargin=*]
-  \item \textbf{组合模型}：器件层错误概率表（阶段 1）$\rightarrow$ 电路层误差矩（阶段 2）$\rightarrow$ 框架层逐层矩传播（阶段 3 的解析模型）$\rightarrow$ 应用层精度映射（用少量实测点标定）。
-  \item \textbf{预测}：给定（频率，电压，各层乘法器配置），预测最终精度。
-  \item \textbf{验证}：在至少 20 个未参与标定的配置上实测，报告预测误差（平均绝对误差、最大误差）与耗时对比。这对应论文中用全程故障注入验证贝叶斯模型的做法。
-  \item \textbf{消融}：去掉协方差项、改用均匀分布下的误差矩、去掉器件层，分别观察预测误差的变化，量化每个因素的贡献。
-  \item \textbf{设计探索}：用组合模型做敏感度分析，选出最敏感的层保持精确，其余层近似；在板上验证选择的效果。
-\end{enumerate}
-
-\section{阶段 6：两颗芯片对比}
-把阶段 1、2 的测试电路分别部署在两块板上，在相同频率、电压、温度下比较时序错误的起始频率和各位出错概率。只有两个样本，结果仅作为芯片差异的示例，不做统计推断。
+\section{统计方法}
+\begin{itemize}[leftmargin=*]
+  \item 配对比较（McNemar）计算精度下降；CIFAR-10 上独立测量的标准误差约 0.3\%。
+  \item 矩的预测误差用对数比；排序用 Spearman 秩相关。
+  \item 位翻转注入的每个配置用多个随机种子，报告置信区间。
+  \item 标定数据（$\kappa$、$\tau$、$s_l$）与验证数据分开。
+\end{itemize}
 
 \section{数据格式}
-\label{sec:data}
 \begin{table}[h]
 \centering
 \small
@@ -177,13 +145,14 @@ P(\text{第 } k \text{ 位出错} \mid f,\ V,\ T,\ \text{激励类型}),
 \toprule
 文件 & 字段 \\
 \midrule
-器件层 & 板卡, 乘法器, 频率, 电压, 温度, 激励类型, 位序号, 出错次数, 总次数 \\
-电路层 & 板卡, 乘法器, 频率, 电压, $a$, $b$, 输出, 参考输出 \\
-框架层 & 模型, 层号, 乘法器配置, 输入编号, 误差均值, 误差方差, （可选）协方差摘要 \\
-应用层 & 模型, 配置, 频率, 电压, Top-1, 来源（板上/仿真/预测） \\
+E1 & 引擎、故障位置类型、位置、出错概率、置信区间、种子 \\
+E2 & 引擎、单元、表示级别、权重值、$\mu$、$\sigma^2$、$\lambda$ \\
+E3 & 引擎、模型、配置、网络层、表示级别、误差均值、方差、协方差摘要、$\Lambda_l$ \\
+E4 & 引擎、模型、配置、精度下降、一致率、$n_{10}$、$n_{01}$ \\
+验证 & 注入层、观测层、配置、$\eta_i$、组合误差、理论界、$m$、$G$、$B$ \\
 \bottomrule
 \end{tabularx}
-\caption{测量数据格式}
+\caption{数据格式}
 \end{table}
 
 \section{时间安排（参考）}
@@ -194,12 +163,12 @@ P(\text{第 } k \text{ 位出错} \mid f,\ V,\ T,\ \text{激励类型}),
 \toprule
 周次 & 内容 \\
 \midrule
-第 1 周 & 阶段 0；测试电路与 MMCM 动态重配置调通 \\
-第 2--3 周 & 阶段 1 频率扫描；阶段 2 静态误差表征 \\
-第 4 周 & 阶段 2 叠加实验；阶段 1 电压扫描 \\
-第 5--7 周 & 阶段 3 加速器（查找表方案）与逐层测量 \\
-第 8 周 & 阶段 4 端到端精度 \\
-第 9--10 周 & 阶段 5 组合模型验证与消融；阶段 6 \\
+1--2 & 阶段 0；仿真引擎 \\
+3--4 & 阶段 2 的 $\mathcal P_{23}$、$\mathcal P_{34}$（仿真真值，$S_2$、$S_3$） \\
+5--6 & 阶段 3、4、5 的最小可行版本 \\
+7--10 & ZCU102 加速器与注入逻辑；一致性检查 \\
+11--12 & 加入 $S_1$ 与 $\mathcal P_{12}$；硬件真值下重复阶段 3--5 \\
+之后 & 阶段 6（可选） \\
 \bottomrule
 \end{tabular}
 \caption{参考时间表}
@@ -207,17 +176,11 @@ P(\text{第 } k \text{ 位出错} \mid f,\ V,\ T,\ \text{激励类型}),
 
 \section{风险与对策}
 \begin{itemize}[leftmargin=*]
-  \item \textbf{时序错误不可复现}：受温度和电压噪声影响。对策：固定温度区间、多次重复、报告置信区间。
-  \item \textbf{超频时 MMCM 或电路整体失效}，而非出现位错误。对策：只让被测单元所在的时钟域超频，控制逻辑保持安全频率。
-  \item \textbf{降压导致板卡无法启动}。对策：先完成频率扫描再做降压；准备恢复脚本和断电重启流程。
-  \item \textbf{FPGA 布线导致时序错误分布与 ASIC 不同}。对策：明确说明结论适用于 FPGA；用固定布局约束保证多次实验一致。
-  \item \textbf{查找表方案不反映真实时序}。对策：只用于框架层和应用层的误差传播验证，时序相关结论来自阶段 1、2 的真实电路。
+  \item \textbf{仿真与硬件不一致}：阶段 1 的逐比特一致性检查是后续所有结论的前提。
+  \item \textbf{验证配置的精度差异落在噪声内}：配置须覆盖较宽的质量范围；使用配对比较。
+  \item \textbf{组合误差界过松}：报告实测组合误差的同时，分析是哪个 $\eta_i$ 主导。
+  \item \textbf{门级注入耗时}：只对少量乘法器做穷举；其余用抽样。
+  \item \textbf{FPGA 结果不能直接推广到 ASIC}：本研究的结论针对传播模型，不依赖 FPGA 的功耗或时序数值。
 \end{itemize}
-
-\begin{thebibliography}{9}
-\bibitem{vallero2016} A.~Vallero et al. Cross-layer system reliability assessment framework for hardware faults. ITC, 2016. DOI: 10.1109/TEST.2016.7805863.
-\bibitem{evoapprox} V.~Mrazek et al. EvoApprox8b: library of approximate adders and multipliers for circuit design and benchmarking of approximation methods. DATE, 2017.
-\bibitem{adapt} AdaPT: fast emulation of approximate DNN accelerators in PyTorch. IEEE TCAD, 2022. \url{https://arxiv.org/abs/2203.04071}
-\end{thebibliography}
 
 \end{document}
