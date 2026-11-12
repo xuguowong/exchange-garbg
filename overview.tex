@@ -1,0 +1,152 @@
+% 编译：xelatex overview.tex（需要 ctex 宏包，编译两遍以解析引用）
+\documentclass[11pt,a4paper]{ctexart}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs,tabularx}
+\usepackage{enumitem}
+\usepackage[hidelinks]{hyperref}
+\usepackage{xurl}
+
+\title{跨层误差传播模型：研究总纲}
+\date{2026年11月12日}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+本文是整个研究的总纲，其余文档（数学基础、架构设计、实验方案、文献与全局模型）均以本文为准。研究目标是建立一个跨层误差传播模型：对器件、电路、框架、应用四个抽象层次之间的三个边界，分别定义误差的表示方式和传播算子；各算子单独表征后可组合，从任意一层产生的误差预测最终的应用质量。近似乘法器、量化、位翻转、时序错误等只是用来驱动和验证模型的误差来源，不是研究对象本身。
+\end{abstract}
+
+\section{研究目标}
+
+\begin{quote}
+建立一个跨层误差传播模型：对“器件$\to$电路”“电路$\to$框架”“框架$\to$应用”三个层间边界，分别给出误差的\textbf{表示方式}和\textbf{传播算子}；各算子单独表征后可以组合，从任意一层产生的误差预测最终的应用质量，并说明误差在每一层被掩蔽或放大了多少。
+\end{quote}
+
+与 Vallero 等人的跨层可靠性框架 \cite{vallero2016} 相比：他们在每一层用“屏蔽概率”（条件概率表）描述离散故障的传播；本研究在每一层用“传播算子”描述一般误差（包括连续的、普遍存在的误差）的传播，并检验算子组合是否成立。
+
+\section{模型骨架}
+
+\subsection{四个接口}
+\begin{table}[h]
+\centering
+\small
+\begin{tabularx}{\textwidth}{@{}lX@{}}
+\toprule
+接口 & 误差的表示方式 \\
+\midrule
+E1 器件层 & 位级错误事件及其概率：存储位翻转、逻辑节点错误、时序违例等 \\
+E2 电路层 & 运算单元输出误差，以操作数为条件的分布（摘要为条件矩与罕见大误差分量） \\
+E3 框架层 & 每个网络层输出张量的误差统计：均值、协方差摘要、大误差发生率 \\
+E4 应用层 & 任务质量：精度下降、与精确模型的预测一致率 \\
+\bottomrule
+\end{tabularx}
+\caption{四个误差接口}
+\end{table}
+
+\subsection{三个传播算子}
+\begin{itemize}[leftmargin=*]
+  \item $\mathcal{P}_{12}: E1 \to E2$。位错误经过运算逻辑变成数值误差：位权放大、经另一操作数放大、逻辑掩蔽。
+  \item $\mathcal{P}_{23}: E2 \to E3$。单元误差经过累加、累加器饱和、重量化舍入、非线性层和网络深度传播。
+  \item $\mathcal{P}_{34}: E3 \to E4$。张量误差经过决策（logit 间隔）变成质量损失。
+\end{itemize}
+
+\subsection{误差来源与组合}
+每一层都可能产生新的误差：$S_1$ 为器件层误差源（位翻转、时序违例），$S_2$ 为电路层误差源（近似运算单元），$S_3$ 为框架层误差源（量化、累加器截断）。全局模型是三个算子的组合，各层误差在对应接口加入：
+\begin{equation}
+E4 = \mathcal{P}_{34}\Bigl(\mathcal{P}_{23}\bigl(\mathcal{P}_{12}(S_1) \oplus S_2\bigr) \oplus S_3\Bigr),
+\end{equation}
+其中 $\oplus$ 表示在同一接口上合并误差（需考虑相关性）。
+
+\section{研究问题}
+\begin{enumerate}[leftmargin=*,label=\textbf{R\arabic*.}]
+  \item \textbf{接口是否充分}：每个接口需要携带多少信息（均值方差、以数据为条件的矩、完整分布、协方差），跨层组合才不失真？
+  \item \textbf{算子是否准确}：每个传播算子单独看，预测误差有多大？
+  \item \textbf{能否组合（核心）}：各算子单独表征后组合起来，是否等于端到端实测？组合误差来自哪里？
+  \item \textbf{掩蔽发生在哪里}：误差在每个边界被掩蔽或放大了多少？
+\end{enumerate}
+
+\section{范围与固定约定}
+
+\subsection{第一阶段范围}
+\begin{itemize}[leftmargin=*]
+  \item 网络：CIFAR-10 上的 ResNet-20，之后 MobileNetV2。Transformer 与大语言模型留待后续阶段。
+  \item 误差来源：$S_2$ 近似乘法器（EvoApprox8b）、$S_3$ 累加器截断、$S_1$ 注入式位翻转（操作数、乘积、累加器寄存器）。真实物理来源（超频、降压引起的时序错误）为可选的后期验证案例。
+  \item 平台：端到端验证全部在 ZCU102 上进行；ZCU104 只用于单元级研究和跨芯片对比。
+\end{itemize}
+
+\subsection{量化与数制约定（所有文档、实验必须遵守）}
+\begin{itemize}[leftmargin=*]
+  \item 权重：有符号 INT8，逐通道对称量化，零点为 0。
+  \item 激活：ReLU 之后为无符号 8 位，逐张量缩放，零点为 0。
+  \item 第一层与最后一层保持精确运算（常见做法，避免输入和输出的特殊数制）。
+  \item 累加器：32 位为基准，另设 24 位等变体作为 $S_3$ 误差源。
+  \item 重量化：定点乘法加移位，舍入方式为四舍五入（半数进位）。
+  \item 有符号乘法：用“符号—幅值”方式包装无符号近似乘法器，即 $\tilde m(a,b) = \operatorname{sgn}(a)\,\tilde m_{\text{u}}(|a|, b)$。
+\end{itemize}
+
+\subsection{“框架层”的界定}
+框架层包括硬件架构（计算阵列、数据流、累加器与部分和位宽）、软件系统框架（量化、算子映射、逐层调度）以及网络结构（BatchNorm、残差、非线性层）。应用层只负责把输出误差映射为任务质量。
+
+\section{验证思路：注入层 $\times$ 观测层}
+在每个接口注入误差，在其上方的每个接口观测，对每个组合比较三者：
+\begin{enumerate}[leftmargin=*]
+  \item 单个算子的预测（检验 R2）；
+  \item 组合模型的预测（检验 R3）；
+  \item 端到端实测（逐比特仿真与 FPGA）。
+\end{enumerate}
+并改变接口携带的信息量（检验 R1），统计各边界的掩蔽与增益（检验 R4）。
+
+\section{验收标准（建议值）}
+\begin{table}[h]
+\centering
+\small
+\begin{tabularx}{\textwidth}{@{}lX@{}}
+\toprule
+指标 & 目标 \\
+\midrule
+单个算子 & E2、E3 上均值与方差的预测误差：对数比绝对值 $\le \log 1.2$ \\
+组合误差 & 组合预测与端到端实测在 E3、E4 上的差距，不超过各算子误差之和的理论界 \\
+最终质量 & $|\widehat{\Delta\text{Acc}} - \Delta\text{Acc}| \le 0.5$ 个百分点，或落在配对比较的 95\% 置信区间内 \\
+排序能力 & 验证配置的预测与实测 Spearman 秩相关 $\ge 0.9$；验证配置须覆盖从几乎无损到明显下降的范围 \\
+效率 & 以设计探索为场景：完成同一组候选配置的筛选，总耗时显著少于逐一仿真（仿真只用于复核最终候选） \\
+可解释性 & 对每个配置给出各边界的掩蔽与增益分解 \\
+\bottomrule
+\end{tabularx}
+\caption{验收标准（建议值，需根据首轮实验调整）}
+\end{table}
+
+\section{创新点（暂定）}
+\begin{enumerate}[leftmargin=*]
+  \item 面向一般误差（含连续、普遍存在的误差）的跨层传播算子与接口定义，扩展 Vallero 等人只针对离散故障的框架。
+  \item 接口充分性的系统研究：接口携带多少信息，组合才成立。
+  \item 算子组合误差的理论界与实测检验。
+  \item 逐边界的掩蔽与增益分解。
+\end{enumerate}
+需先读完 SyRA、FLODAM 等跨层可靠性工作，确认以上各点是否已被做过。
+
+\section{文档地图}
+\begin{table}[h]
+\centering
+\small
+\begin{tabularx}{\textwidth}{@{}lX@{}}
+\toprule
+文档 & 内容 \\
+\midrule
+\texttt{overview.tex} & 本文：目标、模型骨架、研究问题、约定 \\
+\texttt{math-foundations.tex} & 三个传播算子的数学、组合与充分性、掩蔽度量、注意点 \\
+\texttt{architecture.tex} & 软件与硬件架构：接口格式、算子模块、引擎、组合与验证 \\
+\texttt{experiment-plan.tex} & 实验方案：注入层 $\times$ 观测层矩阵 \\
+\texttt{literature-and-global-model.tex} & 按边界组织的文献清单与全局模型 \\
+\texttt{reading-note.tex} & Vallero 等（ITC 2016）阅读笔记 \\
+\texttt{error-propagation-notes.tex} & 早期文献调研与研究空白（背景材料） \\
+\bottomrule
+\end{tabularx}
+\caption{文档地图}
+\end{table}
+
+\begin{thebibliography}{9}
+\bibitem{vallero2016} A.~Vallero et al. Cross-layer system reliability assessment framework for hardware faults. ITC, 2016. DOI: 10.1109/TEST.2016.7805863.
+\end{thebibliography}
+
+\end{document}
