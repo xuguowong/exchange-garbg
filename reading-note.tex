@@ -1,0 +1,144 @@
+% 编译：xelatex reading-note.tex（需要 ctex 宏包，编译两遍以解析引用）
+\documentclass[11pt,a4paper]{ctexart}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs,tabularx}
+\usepackage{enumitem}
+\usepackage[hidelinks]{hyperref}
+\usepackage{xurl}
+
+\title{阅读笔记：Cross-Layer System Reliability Assessment Framework for Hardware Faults}
+\date{2026年11月12日}
+
+\begin{document}
+\maketitle
+
+\section*{论文信息}
+\begin{itemize}[leftmargin=*]
+  \item 作者：A.~Vallero, A.~Savino, G.~Politano, S.~Di Carlo（都灵理工）；A.~Chatzidimitriou, S.~Tselonis, M.~Kaliorakis, D.~Gizopoulos（雅典大学）；M.~Riera, R.~Canal, A.~Gonzalez（加泰罗尼亚理工）；M.~Kooli, A.~Bosio, G.~Di Natale（LIRMM）
+  \item 会议：IEEE International Test Conference（ITC），2016，Paper 15.3
+  \item DOI：10.1109/TEST.2016.7805863
+  \item 项目：欧盟 FP7 CLERECO（Grant 611404）
+  \item 全文来源：\url{https://www.clereco.eu/publications/item/172-cross-layer-system-reliability-assessment-framework-for-hardware-faults.html}
+\end{itemize}
+
+\section{论文要点}
+
+\subsection{问题}
+硬件故障沿硬件、软件层向上传播，途中可能被屏蔽。只考虑部分抽象层次（工艺、电路、微架构、软件）的可靠性评估过于悲观，导致过度设计。作者批评 System Vulnerability Stack 假设各层统计独立、把各层脆弱性因子直接相乘，结果偏悲观。
+
+\subsection{模型：基于组件的贝叶斯网络}
+\begin{itemize}[leftmargin=*]
+  \item 四个域，自下而上：技术域（TD，工艺）$\rightarrow$ 硬件域（HwD，微架构模块：寄存器堆、L1/L2、LSQ）$\rightarrow$ 软件域（SwD）$\rightarrow$ 系统域（SD，观测点）。
+  \item 节点为系统组件，每个节点有一组离散状态（如无错、单比特翻转、双比特翻转）；边表示可靠性依赖；每个节点对应一张条件概率表（CPT）。技术域节点是根节点，用边缘概率描述。
+  \item 参数节点（温度、电压、地点、工作负载等）不直接参与推理，只用于计算 CPT。
+  \item \textbf{软件故障模型（SFM）是跨层的关键}：把硬件错误翻译为 ISA 层面的程序改变，使硬件域与软件域可以独立表征。共 5 类：操作数值错误（WDO）、用错源操作数（SOFS）、指令被替换（IR）、指令执行出错（FI）、控制流错误（CFE）。
+  \item CPT 大小随父节点数指数增长，作者用简化的父子交互模型压缩（据参考文献推断为 noisy-MAX）。
+  \item 两种推理：预测推理（由原始故障率推出系统 FIT）；诊断推理（已知系统失效，反推最可能的组件原因）。
+\end{itemize}
+
+\subsection{各层 CPT 的获取}
+\begin{table}[h]
+\centering
+\small
+\begin{tabularx}{\textwidth}{@{}llX@{}}
+\toprule
+域 & 工具 & 方法 \\
+\midrule
+技术域 & Python + HSPICE & 逐步加大注入电流找到临界电荷 $Q_{\text{crit}}$，再算原始软错误率（SER）；按电压、温度、地点扫描，结果预存成库 \\
+硬件域 & GeFIN（基于 gem5），IRS 模式 & 微架构级故障注入，只运行到第一条受影响指令提交为止，隔离硬件域；每个结构注入 2000 次（误差 2.88\%，置信度 99\%） \\
+软件域 & LIFILL（基于 LLVM IR） & 按 SFM 对 IR 做变异注入，结果分为屏蔽、SDC、无响应；IR 与 ISA 无关，可跨 ISA 复用 \\
+系统域 & C++/Qt 分析器 & 组装贝叶斯网络并推理 \\
+\bottomrule
+\end{tabularx}
+\caption{各层条件概率表的获取方式}
+\end{table}
+
+\subsection{实验与结果}
+\begin{itemize}[leftmargin=*]
+  \item 规模：3 种 22\,nm 工艺（Bulk Planar、Bulk FinFET、SOI Planar）$\times$ 2 种 ISA（x86、ARM Cortex-A15，均为乱序）$\times$ 7 个 MiBench 程序 $=$ 42 种配置。只考虑处理器结构中的单粒子翻转（SEU），主存假设有 ECC 保护。
+  \item 基准：GeFIN 的 IRE 模式（全程故障注入）；并用 100{,}000 次蒙特卡洛分析 CPT 参数误差的影响。
+  \item 精度：贝叶斯网络得到的 FIT 与全程注入相差“几个单位”。论文只给箱线图，未报告相对误差。用各程序平均 CPT 做的快速分析只能给出粗略估计。ACE 分析明显高估。
+  \item 速度：平均节省 65\% 的时间，最多约 78\%（qsort），即只快 2--4 倍。瓶颈在硬件域 CPT 仍需故障注入。
+  \item 设计探索：只保护诊断推理找出的 2 个关键组件，FIT 下降一个数量级以上；继续增加保护收益不明显。
+  \item 每个程序的贝叶斯网络约 20 个节点。
+\end{itemize}
+
+\section{迁移到近似计算的可行性}
+
+\textbf{结论：整体框架可以借鉴，核心量化方法不能直接用。}
+
+\subsection{可以借鉴的部分}
+\begin{table}[h]
+\centering
+\small
+\begin{tabularx}{\textwidth}{@{}XXl@{}}
+\toprule
+论文做法 & 近似计算中的对应 & 可行性 \\
+\midrule
+分层表征再组合 & 器件、电路、框架、应用四层各自建模，再组合 & 适用 \\
+技术域预存 SER 库 & 器件层预存每个输出位的时序错误概率库，按电压、温度、老化索引 & 适用 \\
+SFM 作为层间接口 & 电路层接口为 $e(a,b)$ 或误差统计矩；框架层接口为每个网络层输出的误差统计 & 思路适用，见问题 3 \\
+IRS 模式只跑到层边界 & 只在单个算子或网络层内表征；8 位近似乘法器可穷举 65536 种输入 & 适用且更容易 \\
+工作负载作为参数节点 & 权重与激活的数据分布作为参数节点 & 必须 \\
+诊断推理指导选择性保护 & 找出最敏感的网络层，决定哪里近似、哪里精确 & 很有价值 \\
+全程注入验证 & AdaPT、ApproxTrain 等端到端仿真 & 有现成工具 \\
+\bottomrule
+\end{tabularx}
+\caption{可以借鉴的部分}
+\end{table}
+
+\subsection{不能直接照搬的部分}
+\begin{enumerate}[leftmargin=*,label=\textbf{问题 \arabic*.}]
+  \item \textbf{错误性质不同。} 论文研究罕见、离散、单次的故障，只问是否被屏蔽；近似误差每次运算都有、取值连续，应用层关心质量下降多少。需要把“屏蔽概率”换成误差分布或统计矩的传递；节点状态要么按误差幅度分档，要么改用连续或混合贝叶斯网络。同组 SyRA（IEEE TC 2019）已采用多层混合贝叶斯模型，需先确认其进展。
+  \item \textbf{单故障假设不成立。} 一个点积有 $N$ 次 MAC，误差同时发生并叠加：
+  \begin{equation}
+  \mathbb{E}[\Delta y] = N\mu,\qquad
+  \operatorname{Var}[\Delta y] = N\sigma^2 + \sum_{i\neq j}\operatorname{Cov}(\varepsilon_i,\varepsilon_j).
+  \end{equation}
+  需要统计矩的聚合，而不是单个事件沿边传播。
+  \item \textbf{接口解耦的前提可能不成立。} 论文能跨 ISA 复用软件域结果，前提是 SFM 完整概括了硬件错误的影响。近似乘法器的误差是操作数的确定性函数，与数据分布强相关；论文中平均 CPT 快速分析失准，也说明表征结果依赖工作负载。接口模型必须以数据分布为条件。
+  \item \textbf{相关性。} 贝叶斯网络只表达给定父节点后的条件独立；多个算子共用输入数据时误差相关，除非把数据建模为共同父节点，否则会漏掉相关性。
+  \item \textbf{无环约束。} LLM 自回归解码经 KV cache 形成时间反馈，需改用按时间展开的动态贝叶斯网络。
+  \item \textbf{加速有限。} 论文只节省 65\% 时间。近似计算的电路层可穷举或解析得到误差矩，框架层可用矩传播替代仿真，有望获得数量级加速。
+  \item \textbf{规模。} 论文网络约 20 个节点；DNN 应按网络层或算子取节点粒度（如 ResNet-50 约 50 个节点），规模可行。
+\end{enumerate}
+
+\subsection{可行的跨层方案}
+\begin{table}[h]
+\centering
+\small
+\begin{tabularx}{\textwidth}{@{}lXX@{}}
+\toprule
+层次 & 做法 & 对应论文 \\
+\midrule
+器件层 & SPICE/STA 得到 $P(\text{位错误}\mid V, T, \text{老化})$ 库 & 技术域 SER 库 \\
+电路层 & 穷举或采样近似单元，得到以数据分布和电压为条件的误差矩 $\mathbb{E}[e]$、$\operatorname{Var}[e]$，叠加 VOS 时序错误 & 硬件域 CPT（IRS 模式） \\
+框架层 & 逐网络层矩传播：GEMM 累加含协方差项，非线性层用线性化或无迹变换；数据分布作为共同父节点 & 软件域，但从离散 CPT 改为连续传播 \\
+应用层 & 输出误差分布映射为质量指标，用少量仿真标定 & 系统域观测点 \\
+验证 & AdaPT/ApproxTrain 端到端仿真 & IRE 全程注入 \\
+反向 & 敏感度或诊断推理，选择近似哪些层 & 诊断推理与设计探索 \\
+\bottomrule
+\end{tabularx}
+\caption{借鉴论文结构的跨层误差传播方案}
+\end{table}
+
+\subsection{可作为贡献的研究点}
+\begin{enumerate}[leftmargin=*]
+  \item \textbf{从屏蔽概率到误差矩传递}：把组件化跨层框架从离散可靠性故障推广到连续、普遍存在的近似误差。
+  \item \textbf{以数据为条件的层间接口}：研究接口需要多少信息才能保证跨层组合准确（仅均值方差，还是加上数据相关的协方差）。
+  \item \textbf{统一建模可靠性故障与近似误差}：同一硬件上软错误与近似误差叠加，论文框架只处理前者。
+  \item \textbf{动态或时序展开的模型}：处理 LLM 自回归中的误差累积。
+\end{enumerate}
+
+\subsection{下一步}
+阅读 SyRA（IEEE TC 2019）与 FLODAM（DATE 2022），确认混合贝叶斯网络和“从半导体层到应用层”的流程已做到什么程度，再确定创新点。
+
+\begin{thebibliography}{9}
+\bibitem{vallero2016} A.~Vallero et al. Cross-layer system reliability assessment framework for hardware faults. ITC, 2016. DOI: 10.1109/TEST.2016.7805863.
+\bibitem{syra} A.~Vallero et al. SyRA: early system reliability analysis for cross-layer soft errors resilience in memory arrays of microprocessor systems. IEEE Transactions on Computers, 68(5):765--783, 2019. DOI: 10.1109/TC.2018.2887225.
+\bibitem{flodam} A.~Kritikakou et al. FLODAM: cross-layer reliability analysis flow for complex hardware designs. DATE, 2022. \url{https://past.date-conference.com/proceedings-archive/2022/html/3014.html}
+\bibitem{clereco} A.~Vallero et al. Cross-layer reliability evaluation, moving from the hardware architecture to the system level: a CLERECO EU project overview. Microprocessors and Microsystems, 39(8):1204--1214, 2015.
+\end{thebibliography}
+
+\end{document}
