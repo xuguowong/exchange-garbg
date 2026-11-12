@@ -146,7 +146,7 @@
 
 \subsection{电路层 $\rightarrow$ 框架层}
 \begin{enumerate}[leftmargin=*,label=\textbf{\arabic*.},resume]
-  \item \textbf{偏置与方差谁主导？} 文献 \cite{amierr} 认为偏置主导，文献 \cite{hwapproxsurvey} 认为方差/RMS 主导。可从理论上推导：累加长度 $N$ 下偏置按 $N$、标准差按 $\sqrt{N}$ 增长，再考虑 BatchNorm 对偏置的吸收、ReLU 截断等因素，给出“何时偏置主导”的判据，并用实验验证。
+  \item \textbf{偏置与方差谁主导？} 文献 \cite{amierr} 认为偏置主导，文献 \cite{hwapproxsurvey} 认为方差/RMS 主导。可从理论上推导：累加长度 $N$ 下偏置按 $N$、标准差按 $\sqrt{N}$ 增长，再考虑 BatchNorm 统计量重新标定后对偏置的吸收（推理时折叠的 BatchNorm 本身不吸收偏置）、ReLU 截断等因素，给出“何时偏置主导”的判据，并用实验验证。
   \item \textbf{误差相关性被忽略。} 解析模型大多假设各次 MAC 的误差独立，但近似乘法器的误差是操作数的确定性函数，会与权重和激活分布相关。需要协方差感知的传播模型（完整的 $J\Sigma J^{\mathsf T}$），以及按真实数据分布计算的误差统计矩（WMED 思路的推广）。
 \end{enumerate}
 

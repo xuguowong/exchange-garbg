@@ -1,0 +1,434 @@
+% 编译：xelatex math-foundations.tex（需要 ctex 宏包，编译两遍以解析引用）
+\documentclass[11pt,a4paper]{ctexart}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs,tabularx}
+\usepackage{enumitem}
+\usepackage[hidelinks]{hyperref}
+\usepackage{xurl}
+
+\newcommand{\E}{\mathbb{E}}
+\DeclareMathOperator{\Var}{Var}
+\DeclareMathOperator{\Cov}{Cov}
+\DeclareMathOperator{\sgn}{sgn}
+\DeclareMathOperator{\ReLU}{ReLU}
+\DeclareMathOperator{\round}{round}
+
+\newenvironment{caution}{\par\medskip\noindent\textbf{注意.}\ }{\par\medskip}
+
+\title{近似计算跨层误差传播框架：数学基础、注意点与最终目标}
+\date{2026年11月12日}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+本文整理跨层误差传播框架各层用到的数学内容：器件层的时序错误模型、电路层的误差函数与条件误差矩、框架层的逐层传播（线性层、量化、非线性层、层间递推）、应用层的质量映射，以及统计估计、验证与设计探索所需的公式。每部分列出建模假设与注意点，最后给出框架的最终目标与量化验收标准。文中“建议值”为初始设定，需根据实验调整。
+\end{abstract}
+
+\tableofcontents
+
+\section{记号}
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabularx}{\textwidth}{@{}lX@{}}
+\toprule
+记号 & 含义 \\
+\midrule
+$a, b$ & 乘法器的两个操作数（权重 $w$、激活 $x$），8 位整数 \\
+$m(a,b)=ab$，$\tilde m(a,b)$ & 精确乘法、近似乘法 \\
+$e(a,b)$ & 运算单元误差 $\tilde m(a,b) - ab$ \\
+$p(a,b)$ & 操作数的联合分布（来自 L4 的数据分布） \\
+$\mu, \sigma^2$ & 误差的均值、方差 \\
+$N$ & 一个点积的累加长度 \\
+$\Delta^{(l)}$ & 第 $l$ 个网络层输出的误差向量（近似输出减精确输出） \\
+$\varepsilon^{(l)}$ & 第 $l$ 个网络层自身新引入的误差 \\
+$J_l$ & 第 $l$ 个网络层对其输入的雅可比矩阵 \\
+$f, V, T$ & 时钟频率、电压、温度；$T_{\text{clk}} = 1/f$ \\
+$z$ & 输出层 logits；$c$ 为精确模型预测的类别 \\
+$\Phi, \phi$ & 标准正态分布函数与密度 \\
+\bottomrule
+\end{tabularx}
+\caption{记号}
+\end{table}
+
+\section{L1 器件层：时序错误模型}
+
+\subsection{单个输出位的出错概率}
+设第 $k$ 个输出位的路径延迟为随机变量 $D_k$，它取决于电压、温度和本次输入的跳变。若延迟超过时钟周期减去建立时间，则发生时序违例：
+\begin{equation}
+P_k(f,V,T) = P\bigl(D_k > T_{\text{clk}} - t_{\text{su}}\bigr).
+\end{equation}
+若把 $D_k$ 近似为正态分布 $\mathcal N(\mu_k, \sigma_k^2)$，则
+\begin{equation}
+P_k = \Phi\!\left(\frac{\mu_k(V,T) - (T_{\text{clk}} - t_{\text{su}})}{\sigma_k(V,T)}\right),
+\end{equation}
+即对 $T_{\text{clk}}$ 的 probit 模型，可用逻辑回归替代。延迟随电压的变化可用 alpha 幂律作为拟合形式：
+\begin{equation}
+\mu_k(V) \propto \frac{V}{(V - V_{\text{th}})^{\alpha}}.
+\end{equation}
+
+\begin{caution}
+\begin{itemize}[leftmargin=*]
+  \item 正态延迟与 alpha 幂律只是\textbf{拟合形式}，不是物理定律；参数只能由实测数据确定。
+  \item 先进工艺在低电压下可能出现“温度反转”（温度升高反而变快），不能假设延迟随温度单调增加。
+  \item FPGA 的时钟偏斜、布线延迟都会进入 $D_k$；换布局后模型需重新标定。
+\end{itemize}
+\end{caution}
+
+\subsection{从位错误到数值误差}
+时序违例时，寄存器通常捕获到旧值或中间值，而不是随机翻转。记 $\delta_k = \tilde y_k - y_k \in \{-1, 0, 1\}$，位权 $w_k = 2^k$（有符号数最高位 $w_{n-1} = -2^{n-1}$），则时序错误引入的数值误差为
+\begin{equation}
+e_{\text{t}} = \sum_{k} w_k \delta_k,\qquad
+\E[e_{\text{t}}] = \sum_k w_k \E[\delta_k],\qquad
+\Var[e_{\text{t}}] = \sum_{j}\sum_{k} w_j w_k \Cov(\delta_j, \delta_k).
+\end{equation}
+
+\begin{caution}
+\begin{itemize}[leftmargin=*]
+  \item $\delta_k \neq 0$ 的前提是本次输出位与上次不同，因此出错概率\textbf{依赖输入序列}，不能只用当前输入索引。
+  \item 进位链使多个高位同时出错，$\Cov(\delta_j,\delta_k)$ 不可忽略；假设各位独立会低估方差。
+  \item 时序错误是“罕见但幅度大”的误差（高位权重大），只用均值和方差描述不充分，见第~\ref{sec:tails} 节。
+\end{itemize}
+\end{caution}
+
+\subsection{出错概率的估计}
+在 $n$ 次试验中观测到 $x$ 次出错，$\hat p = x/n$。置信区间用 Wilson 区间：
+\begin{equation}
+\frac{\hat p + \frac{z^2}{2n} \pm z\sqrt{\frac{\hat p(1-\hat p)}{n} + \frac{z^2}{4n^2}}}{1 + \frac{z^2}{n}}.
+\end{equation}
+若一次也没有观测到错误，95\% 置信上界约为 $3/n$（“三的法则”）。达到误差 $E$ 所需样本量约为 $n \ge z^2 p(1-p)/E^2$。
+
+\section{L2 电路层：误差函数与条件误差矩}
+
+\subsection{标准误差指标}
+在分布 $p(a,b)$ 下：
+\begin{align}
+\text{ER} &= P(e \neq 0), &
+\text{MED} &= \E|e|, &
+\text{MRED} &= \E\!\left[\frac{|e|}{|ab|}\,\middle|\, ab \neq 0\right], \\
+\mu &= \E[e], &
+\sigma^2 &= \Var[e], &
+\text{MSE} &= \mu^2 + \sigma^2 .
+\end{align}
+文献通常在均匀分布下计算这些指标，本框架一律在真实数据分布下计算。
+
+\subsection{以权重为条件的误差矩}
+推理时权重固定、激活随输入变化。若权重与激活独立，对每个权重值 $a$：
+\begin{equation}
+\mu(a) = \sum_{b} p_x(b)\, e(a,b),\qquad
+\sigma^2(a) = \sum_{b} p_x(b)\,\bigl(e(a,b) - \mu(a)\bigr)^2 .
+\end{equation}
+其中 $p_x$ 是该网络层激活的分布。
+
+\begin{caution}
+对固定的网络，应使用以权重为条件的 $\mu(a)$、$\sigma^2(a)$，而不是对权重分布再平均。对权重平均后的 $\mu$ 会掩盖“某些权重值上偏置很大”的情况。
+\end{caution}
+
+\subsection{有符号运算与偏置抵消}
+EvoApprox8b 中很多乘法器是无符号的。用“符号—幅值”方式处理有符号数时：
+\begin{equation}
+e_{\text{s}}(a,b) = \sgn(a)\sgn(b)\, e_{\text{u}}(|a|,|b|).
+\end{equation}
+ReLU 之后激活非负，于是一个点积的偏置为
+\begin{equation}
+\E[\Delta y \mid w] = \sum_i \sgn(w_i)\, \mu_{\text{u}}(|w_i|).
+\end{equation}
+当正负权重大致平衡时，偏置会大幅抵消。
+
+\begin{caution}
+\begin{itemize}[leftmargin=*]
+  \item 同一个近似乘法器，按无符号直接使用与按符号—幅值使用，偏置行为完全不同。这可能是文献中“偏置主导”与“方差主导”结论矛盾的原因之一（\textbf{待验证的假设}）。
+  \item 实验中必须明确记录有符号数的处理方式。
+\end{itemize}
+\end{caution}
+
+\subsection{近似误差与时序错误的叠加}
+\begin{equation}
+e_{\text{total}} = e_{\text{a}} + e_{\text{t}},\qquad
+\Var[e_{\text{total}}] = \Var[e_{\text{a}}] + \Var[e_{\text{t}}] + 2\Cov(e_{\text{a}}, e_{\text{t}}).
+\end{equation}
+
+\begin{caution}
+$e_{\text{a}}$ 与 $e_{\text{t}}$ 都是操作数的函数，一般不独立；而且近似电路的关键路径与精确电路不同，$e_{\text{t}}$ 必须在近似电路本身上测量，不能沿用精确电路的时序错误。$\Cov(e_{\text{a}}, e_{\text{t}})$ 是否可忽略，正是实验阶段 2 要回答的问题。
+\end{caution}
+
+\section{L3 框架层：误差的逐层传播}
+
+\subsection{点积与卷积}
+点积 $y = \sum_{i=1}^{N} w_i x_i$ 的误差 $\Delta y = \sum_i \varepsilon_i$，$\varepsilon_i = e(w_i, x_i)$。整数累加本身是精确的，因此
+\begin{equation}
+\E[\Delta y] = \sum_{i} \mu(w_i),\qquad
+\Var[\Delta y] = \sum_{i} \sigma^2(w_i) + \sum_{i \neq j} \Cov(\varepsilon_i, \varepsilon_j).
+\end{equation}
+若各项同分布且独立，退化为 $\E[\Delta y] = N\mu$，$\Var[\Delta y] = N\sigma^2$。
+
+\paragraph{偏置主导的判据.}
+偏置与标准差之比
+\begin{equation}
+R = \frac{|\E[\Delta y]|}{\sqrt{\Var[\Delta y]}} = \sqrt{N}\,\frac{|\mu|}{\sigma}\quad(\text{独立同分布时}),
+\end{equation}
+当 $R > 1$，即 $N > N^{*} = \sigma^2/\mu^2$ 时偏置主导。一般情形用上式左侧按实际权重计算。
+
+\paragraph{不同输出位置之间的协方差.}
+卷积中两个输出位置 $p, q$ 共用同一组权重，且相邻位置的激活相关：
+\begin{equation}
+\Cov(\Delta y_p, \Delta y_q) = \sum_i \sum_j \Cov\bigl(e(w_i, x_{i,p}),\, e(w_j, x_{j,q})\bigr) \neq 0 .
+\end{equation}
+
+\begin{caution}
+\begin{itemize}[leftmargin=*]
+  \item 同一点积内部（激活空间相关）和不同输出之间（共享权重）的协方差都存在。忽略它们，在后续的池化、下一层累加中会\textbf{低估}误差：独立误差平均后方差按 $1/n$ 下降，相关误差不会。
+  \item 第~\ref{sec:recursion} 节的递推需要协方差，但完整协方差矩阵维度为（通道数 $\times$ 高 $\times$ 宽）的平方，必须做摘要，例如每通道方差加上平稳的空间相关函数，或低秩近似。
+\end{itemize}
+\end{caution}
+
+\subsection{累加器位宽与饱和}
+累加器为 $B$ 位时，溢出或饱和的概率可用正态近似估计：
+\begin{equation}
+P_{\text{sat}} \approx P\bigl(|y + \Delta y| > 2^{B-1}\bigr).
+\end{equation}
+饱和是非线性操作，会截断误差，也会自身引入大误差。
+
+\subsection{重量化与舍入掩蔽}
+重量化把累加结果缩放并舍入：$q = \round(s \cdot \text{acc} + \beta)$。设缩放后误差为 $\delta = s\,\Delta y$，$|\delta| < 1$。若舍入前数值的小数部分在 $[0,1)$ 上近似均匀且与 $\delta$ 独立，则输出误差 $r = \round(z + \delta) - \round(z)$ 满足
+\begin{equation}
+P(r = \sgn(\delta)) = |\delta|,\qquad P(r = 0) = 1 - |\delta|,
+\end{equation}
+\begin{equation}
+\E[r \mid \delta] = \delta,\qquad \E[r^2 \mid \delta] = |\delta|,\qquad \Var[r \mid \delta] = |\delta|(1 - |\delta|).
+\end{equation}
+
+\begin{caution}
+\begin{itemize}[leftmargin=*]
+  \item 舍入保持误差的\textbf{均值}，但把小误差变成“大多数时候为 0、偶尔为 $\pm 1$”。线性传播 $r \approx \delta$ 会把二阶矩从 $|\delta|$ 低估为 $\delta^2$。
+  \item 这正是近似计算中的“掩蔽”：$P(r=0) = 1-|\delta|$ 对应 Vallero 等人框架中的屏蔽概率。
+  \item 小数部分均匀的假设在缩放因子特殊（如 2 的幂）时不成立，需要实测检验。
+\end{itemize}
+\end{caution}
+
+\subsection{非线性层}
+
+\paragraph{一般方法（delta 方法）.}
+对标量函数 $g$，输入误差均值为 $\mu_\Delta$、方差为 $\sigma_\Delta^2$：
+\begin{equation}
+\E[g(u+\Delta)] - g(u) \approx g'(u)\mu_\Delta + \tfrac12 g''(u)\bigl(\sigma_\Delta^2 + \mu_\Delta^2\bigr),\qquad
+\Var[g(u+\Delta)] \approx g'(u)^2 \sigma_\Delta^2 .
+\end{equation}
+向量形式：$\Sigma_{\text{out}} \approx J\,\Sigma_{\text{in}}\,J^{\mathsf T}$。
+
+\paragraph{ReLU.}
+ReLU 在 0 处不可导，delta 方法失效。若给定精确输入 $u$，误差 $\Delta \sim \mathcal N(\mu, \sigma^2)$，令 $m = u + \mu$，则精确结果为
+\begin{equation}
+\E[\ReLU(u + \Delta)] = m\,\Phi\!\left(\frac{m}{\sigma}\right) + \sigma\,\phi\!\left(\frac{m}{\sigma}\right).
+\end{equation}
+$u$ 远小于 0 时误差被完全掩蔽；$u$ 接近 0 时误差被部分截断。最终需对 $u$ 的数据分布求平均。
+
+\paragraph{推理时折叠的 BatchNorm.}
+BatchNorm 在推理时是逐通道仿射变换 $y = \gamma(x - m)/s + \beta$，误差只被缩放：
+\begin{equation}
+\Delta y = \frac{\gamma}{s}\,\Delta x .
+\end{equation}
+
+\begin{caution}
+推理时折叠的 BatchNorm \textbf{不会吸收偏置}，只会按 $\gamma/s$ 放大或缩小。只有在近似硬件上重新估计 BatchNorm 统计量（或做近似感知重训练）后，$m$ 才会随偏置移动，从而抵消偏置。本系列早期文档中“BatchNorm 能吸收偏置”的说法已据此更正。
+\end{caution}
+
+\paragraph{残差连接.}
+$y = F(x) + x$ 时
+\begin{equation}
+\Delta y = \Delta F + \Delta x,\qquad \Var[\Delta y] = \Var[\Delta F] + \Var[\Delta x] + 2\Cov(\Delta F, \Delta x).
+\end{equation}
+残差连接把误差直接传到后层，不经过中间的掩蔽。
+
+\paragraph{池化.}
+平均池化是线性操作，方差缩小程度取决于池化窗口内误差的相关性。最大池化在最大值与次大值的差距远大于误差尺度时，$\Delta y \approx \Delta x_{i^*}$（$i^*$ 为最大值位置）；差距较小时，误差可能改变选中的位置，此时需按“选中位置改变”的概率分情况处理。
+
+\paragraph{Softmax.}
+$p = \operatorname{softmax}(z)$ 的雅可比矩阵为
+\begin{equation}
+J = \operatorname{diag}(p) - p\,p^{\mathsf T},\qquad J\mathbf 1 = 0 .
+\end{equation}
+所有 logits 加上相同常数时输出不变：\textbf{共模偏置被完全掩蔽}，只有 logits 之间误差的差异起作用。
+
+\paragraph{LayerNorm.}
+对长度为 $d$ 的向量，记标准化结果为 $\hat x$、标准差为 $\sigma_x$，则
+\begin{equation}
+J = \frac{\operatorname{diag}(\gamma)}{\sigma_x}\left(I - \frac{1}{d}\mathbf 1\mathbf 1^{\mathsf T} - \frac{1}{d}\hat x\,\hat x^{\mathsf T}\right).
+\end{equation}
+LayerNorm 同样去掉共模偏置，并去掉沿 $\hat x$ 方向的缩放误差。
+
+\paragraph{无迹变换.}
+对 $n$ 维输入取 $2n+1$ 个 sigma 点 $\chi_0 = m$，$\chi_{\pm i} = m \pm \bigl(\sqrt{(n+\lambda)\Sigma}\bigr)_i$，经 $g$ 映射后加权求均值与协方差。可处理较强的非线性，但高维时代价过大，只适合逐元素或小维度使用。
+
+\subsection{层间递推}
+\label{sec:recursion}
+记精确激活为 $a_l$，近似激活为 $a_l + \Delta^{(l)}$，第 $l$ 层的近似实现为 $\tilde f_l$：
+\begin{equation}
+\Delta^{(l+1)} = \underbrace{f_l(a_l + \Delta^{(l)}) - f_l(a_l)}_{\approx\, J_l \Delta^{(l)}} + \underbrace{\tilde f_l(a_l + \Delta^{(l)}) - f_l(a_l + \Delta^{(l)})}_{\varepsilon^{(l)}} .
+\end{equation}
+于是均值与协方差的递推为
+\begin{align}
+m_{l+1} &\approx J_l\, m_l + \mu_{\varepsilon}^{(l)}, \\
+\Sigma_{l+1} &\approx J_l \Sigma_l J_l^{\mathsf T} + \Sigma_{\varepsilon}^{(l)} + J_l C_l + C_l^{\mathsf T} J_l^{\mathsf T},
+\qquad C_l = \Cov\bigl(\Delta^{(l)}, \varepsilon^{(l)}\bigr).
+\end{align}
+误差范数的上界（$L_k$ 为第 $k$ 层的 Lipschitz 常数）：
+\begin{equation}
+\|\Delta^{(L)}\| \le \sum_{l} \Bigl(\prod_{k=l+1}^{L-1} L_k\Bigr) \|\varepsilon^{(l)}\| .
+\end{equation}
+
+\begin{caution}
+\begin{itemize}[leftmargin=*]
+  \item 新引入的误差 $\varepsilon^{(l)}$ 取决于已被污染的输入 $a_l + \Delta^{(l)}$；用精确激活下的统计量代替，是一阶近似，误差较大时失效。
+  \item 交叉项 $C_l$ 通常被假设为 0，需要用仿真引擎检验这一假设。
+  \item $J_l$ 依赖数据（ReLU 的开关状态、softmax 的输出），实际使用的是对数据分布取期望后的“平均场”近似。
+  \item Lipschitz 上界通常很松，只适合作理论分析，不适合作预测。
+\end{itemize}
+\end{caution}
+
+\section{L4 应用层：质量映射}
+
+\subsection{基于间隔的翻转概率}
+本节思路与 Sakr 等人提出的浮点与定点网络“失配概率” \cite{sakr2017} 相同，应以其为基础并引用；本框架的扩展在于加入近似误差的偏置项与 logits 之间的协方差。
+
+对样本 $s$，精确模型的 logits 为 $z$，预测类别为 $c$，与类别 $j$ 的间隔为 $M_{s,j} = z_c - z_j > 0$。近似输出改变预测的条件是存在 $j$ 使
+\begin{equation}
+D_j = \Delta z_j - \Delta z_c > M_{s,j}.
+\end{equation}
+在正态近似下，
+\begin{equation}
+P_{\text{flip},s} \approx 1 - P\bigl(D_j < M_{s,j},\ \forall j \ne c\bigr) \le \sum_{j \neq c} \Phi\!\left(\frac{\E[D_j] - M_{s,j}}{\sigma_{D_j}}\right),
+\end{equation}
+\begin{equation}
+\sigma_{D_j}^2 = \Var[\Delta z_j] + \Var[\Delta z_c] - 2\Cov(\Delta z_j, \Delta z_c).
+\end{equation}
+通常只需考虑次大类别。只有 logits 误差的\textbf{差}起作用，共模偏置不影响预测；logits 误差正相关时 $\sigma_{D_j}$ 变小。
+
+\subsection{精度下降}
+记 $\mathcal C$、$\mathcal W$ 为精确模型分类正确、错误的样本集合，$S$ 为样本总数：
+\begin{equation}
+\Delta\text{Acc} \approx \frac{1}{S}\left(\sum_{s \in \mathcal C} P_{\text{flip},s} - \sum_{s \in \mathcal W} P_{\text{to-true},s}\right),
+\end{equation}
+第二项是原本错误、被误差“改对”的概率，通常很小。更干净的目标是\textbf{与精确模型的预测一致率}（top-1 agreement），它不受标签噪声影响。
+
+\subsection{标定}
+正态近似在尾部往往不准。用少量实测配置拟合一个缩放因子 $\kappa$（把 $\sigma_{D_j}$ 替换为 $\kappa\,\sigma_{D_j}$），再在其余配置上验证。
+
+\begin{caution}
+标定点与验证点必须分开，否则报告的预测精度会偏乐观。
+\end{caution}
+
+\section{统计与验证}
+
+\subsection{精度测量的分辨率}
+\label{sec:resolution}
+在 $S$ 个样本上测得精度 $A$，其标准误差为
+\begin{equation}
+\text{SE} = \sqrt{A(1-A)/S}.
+\end{equation}
+CIFAR-10 测试集 $S = 10\,000$、$A \approx 0.9$ 时，$\text{SE} \approx 0.3\%$，两个独立测量之间约 $0.8\%$ 以内的差异无法分辨。
+
+\paragraph{配对比较.}
+精确模型与近似模型在同一批样本上比较时，统计“正确变错误”的样本数 $n_{10}$ 和“错误变正确”的样本数 $n_{01}$：
+\begin{equation}
+\Delta\text{Acc} = \frac{n_{10} - n_{01}}{S},
+\end{equation}
+用 McNemar 检验判断是否显著。配对比较的分辨率远高于两次独立测量。
+
+\subsection{预测精度的评价}
+\begin{itemize}[leftmargin=*]
+  \item 每层误差统计：比较预测与实测的均值；方差用对数比 $\log(\hat\sigma^2/\sigma^2)$ 评价。
+  \item 最终质量：平均绝对误差、最大误差。
+  \item 设计探索更关心\textbf{排序}：用 Spearman 或 Kendall 秩相关评价预测能否正确排列各配置的优劣。
+\end{itemize}
+
+\subsection{尾部与罕见大误差}
+\label{sec:tails}
+时序错误、高位出错属于“罕见但幅度大”的误差，均值与方差无法描述。可用混合模型：
+\begin{equation}
+e = B \cdot E_{\text{big}} + (1-B)\cdot E_{\text{small}},\qquad B \sim \text{Bernoulli}(\pi),
+\end{equation}
+分别传播“是否发生大误差”的概率 $\pi$ 和各自的幅度分布。大误差发生时往往直接导致输出改变，可按“只要发生就翻转”保守处理。
+
+\section{设计探索}
+目标：在质量约束下最小化代价（FPGA 上可用 LUT 数等作代价的替代指标）：
+\begin{equation}
+\min_{\{m_l\}} \sum_l c_l(m_l)\quad \text{s.t.}\quad \widehat{\Delta\text{Acc}}(\{m_l\}) \le \delta .
+\end{equation}
+若各层误差相互独立且一阶近似成立，输出层 logits 差的均值与方差可近似为各层贡献之和：
+\begin{equation}
+\E[D] \approx \sum_l h_l\, \mu_l(m_l),\qquad \Var[D] \approx \sum_l g_l\, \sigma_l^2(m_l),
+\end{equation}
+其中增益 $h_l, g_l$ 由雅可比乘积得到，对每个模型只需算一次。问题化为多选背包问题，可用动态规划或贪心求解。
+
+\begin{caution}
+可加性依赖“各层误差独立”与一阶近似；最终选出的配置必须在仿真引擎或硬件上复核。
+\end{caution}
+
+\section{注意点汇总}
+\begin{enumerate}[leftmargin=*]
+  \item 时序错误不是独立的随机位翻转：依赖上一个输入，多个高位相关出错。
+  \item 有符号数的处理方式（直接使用或符号—幅值）决定偏置是否抵消，必须记录。
+  \item 推理时权重固定，应使用以权重为条件的误差矩。
+  \item 推理时折叠的 BatchNorm 不吸收偏置；只有重新标定统计量或重训练后才会。
+  \item 重量化的舍入保持误差均值，但掩蔽大部分小误差并改变二阶矩；线性传播会算错方差。
+  \item Softmax、LayerNorm、argmax 掩蔽共模偏置；应传播 logits 之间误差的差。
+  \item 协方差有三处来源：点积内部（激活相关）、输出之间（共享权重）、传播误差与新增误差之间。
+  \item 正态近似在尾部不准；罕见大误差需用混合模型单独处理。
+  \item 精度测量本身有约 $0.3\%$ 的标准误差，应使用配对比较；标定与验证数据必须分开。
+  \item FPGA 上的时序与功耗结论不能直接推广到 ASIC。
+\end{enumerate}
+
+\section{最终目标}
+
+\subsection{总目标}
+建立并验证一个跨层误差传播模型：对任意系统配置
+\begin{equation}
+c = \bigl(f,\ V,\ T,\ \{m_l\}_{l=1}^{L},\ \text{架构参数}\bigr),
+\end{equation}
+在秒级时间内给出各网络层的误差统计（I3）与最终质量预测 $\hat Q(c)$，并在每个接口（I1、I2、I3、最终质量）上与实测真值对比，量化误差。
+
+\subsection{验收标准（建议值）}
+\begin{table}[h]
+\centering
+\small
+\begin{tabularx}{\textwidth}{@{}lX@{}}
+\toprule
+指标 & 目标 \\
+\midrule
+每层误差统计 & 均值与方差的预测误差：对数比绝对值 $\le \log 1.2$（约 $\pm 20\%$） \\
+最终质量 & $|\widehat{\Delta\text{Acc}} - \Delta\text{Acc}| \le 0.5$ 个百分点，或落在实测的 95\% 置信区间内 \\
+排序能力 & 在全部验证配置上，预测与实测的 Spearman 秩相关 $\ge 0.9$ \\
+速度 & 单个配置预测 $\le 1$ 秒；相比逐比特仿真加速 $\ge 100$ 倍 \\
+验证规模 & 至少 20 个未参与标定的配置；至少 2 个网络（ResNet-20、MobileNetV2） \\
+\bottomrule
+\end{tabularx}
+\caption{验收标准（建议值，需根据首轮实验调整）}
+\end{table}
+
+\subsection{需要回答的科学问题}
+\begin{enumerate}[leftmargin=*,label=\textbf{Q\arabic*.}]
+  \item \textbf{偏置还是方差主导？} 判据 $N^{*} = \sigma^2/\mu^2$ 在真实网络中是否成立；有符号数处理方式的影响有多大。
+  \item \textbf{协方差有多重要？} 忽略各来源的协方差，预测误差分别增加多少。
+  \item \textbf{近似误差与时序错误能否简单相加？} $\Cov(e_{\text{a}}, e_{\text{t}})$ 是否可忽略。
+  \item \textbf{层间接口需要多少信息？} 只传均值方差、传条件误差矩、传完整查找表，三者的预测精度差别多大。
+  \item \textbf{掩蔽来自哪里？} 舍入、ReLU、softmax 共模抵消各自掩蔽了多少误差。
+\end{enumerate}
+
+\subsection{交付物}
+\begin{enumerate}[leftmargin=*]
+  \item 器件错误库与运算单元库（含 FPGA 实测数据）。
+  \item 开源的跨层误差传播框架（解析引擎、仿真引擎、硬件驱动、设计探索工具）。
+  \item 论文：方法与验证结果，以及对 Q1--Q5 的回答。
+\end{enumerate}
+
+\begin{thebibliography}{9}
+\bibitem{vallero2016} A.~Vallero et al. Cross-layer system reliability assessment framework for hardware faults. ITC, 2016. DOI: 10.1109/TEST.2016.7805863.
+\bibitem{amierr} Approximate multiplier induced error propagation in deep neural networks. arXiv:2512.06537, 2025.
+\bibitem{sakr2017} C.~Sakr, Y.~Kim, N.~Shanbhag. Analytical guarantees on numerical precision of deep neural networks. ICML, 2017. PMLR 70:3007--3016.
+\end{thebibliography}
+
+\end{document}

@@ -1,0 +1,319 @@
+% 编译：xelatex architecture.tex（需要 ctex 宏包，编译两遍以解析引用）
+\documentclass[11pt,a4paper]{ctexart}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs,tabularx}
+\usepackage{enumitem}
+\usepackage[hidelinks]{hyperref}
+\usepackage{xurl}
+
+\title{近似计算跨层误差传播框架：架构设计}
+\date{2026年11月12日}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+本文档定义跨层误差传播框架的总体架构：四个抽象层次（器件、电路、框架、应用）各自的功能、输入输出、模型方法与软件工具链，层间接口的数据格式，以及预测、测量、反馈三条数据流。设计借鉴 Vallero 等人的组件化跨层可靠性框架 \cite{vallero2016}：分层表征、以接口模型解耦、结果入库复用；但把离散的“屏蔽概率”替换为以数据分布为条件的误差统计量传递。
+\end{abstract}
+
+\section{设计原则}
+
+\begin{enumerate}[leftmargin=*]
+  \item \textbf{分层解耦}：每层只通过明确定义的接口与相邻层交换信息；某层的实现方法（解析、仿真、实测）可以替换，不影响其他层。
+  \item \textbf{接口以数据为条件}：近似误差依赖操作数分布，层间接口必须携带或可重算以数据分布为条件的误差统计量，不能只传平均指标（如 MED）。
+  \item \textbf{双路径}：每层同时具备\textbf{模型路径}（快速预测）与\textbf{测量路径}（FPGA 实测或逐比特仿真，作为真值），并在每个接口处对比两者。
+  \item \textbf{入库复用}：器件层与电路层的表征结果存入库中，按参数索引；新的系统配置只需重算变化的部分。
+  \item \textbf{可追溯}：每个产物记录生成它的配置、代码版本与上游产物编号。
+\end{enumerate}
+
+\section{总体结构}
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabularx}{\textwidth}{@{}lXXl@{}}
+\toprule
+层次 & 功能 & 向上输出（接口） & 主要平台 \\
+\midrule
+L4 应用层 & 质量指标映射；数据分布采集；敏感度分析与设计探索 & 质量预测、推荐配置 & 主机 \\
+\multicolumn{4}{c}{$\uparrow$ I3：网络层误差剖面} \\
+L3 框架层 & 误差经加速器与网络逐层传播（累加、位宽、重量化、非线性） & I3 & ZCU102 + 主机 \\
+\multicolumn{4}{c}{$\uparrow$ I2：运算单元误差模型} \\
+L2 电路层 & 近似运算单元的误差函数与条件误差矩；叠加时序错误 & I2 & ZCU104 + 主机 \\
+\multicolumn{4}{c}{$\uparrow$ I1：器件错误模型} \\
+L1 器件层 & 超频、降压、温度下的时序错误表征 & I1 & ZCU104 \\
+\bottomrule
+\end{tabularx}
+\caption{四层结构与接口（自下而上）}
+\label{tab:overview}
+\end{table}
+
+\paragraph{关于“框架层”的界定.}
+本文中框架层同时包括硬件架构（计算阵列、数据流、累加器与部分和位宽）和软件系统框架（量化方案、算子映射、逐层调度）。网络结构对误差的影响（BatchNorm、残差、非线性层）在框架层的传播引擎中处理；应用层只负责把最终输出误差映射为任务质量。
+
+\section{L1 器件层}
+
+\subsection{功能}
+表征物理层面的错误来源：在不同频率、电压、温度下，运算单元每个输出位发生时序错误的概率。
+
+\subsection{输入与输出}
+\begin{itemize}[leftmargin=*]
+  \item \textbf{输入}：被测电路网表与布局约束；扫描参数（频率 $f$、电压 $V$、温度 $T$）；激励序列（双向量测试或真实数据序列）。
+  \item \textbf{输出 I1}：器件错误模型，见第~\ref{sec:interfaces} 节。
+\end{itemize}
+
+\subsection{模型路径}
+\begin{itemize}[leftmargin=*]
+  \item 从 Vivado 静态时序分析中提取每个输出位的路径裕量分布。
+  \item 拟合出错概率与“时钟周期减路径延迟”之间的关系（如按位的逻辑回归），用于在未测量的 $(f, V, T)$ 点上插值预测。
+\end{itemize}
+
+\subsection{测量路径与软件链}
+\begin{table}[h]
+\centering
+\small
+\begin{tabularx}{\textwidth}{@{}lX@{}}
+\toprule
+环节 & 工具 \\
+\midrule
+综合与实现 & Vivado；被测乘法器强制 LUT 实现（\texttt{use\_dsp = "no"}）；用 Pblock 固定布局，保证多次实验一致 \\
+时序报告 & Vivado \texttt{report\_timing}，导出各输出位路径裕量 \\
+调频 & MMCM 动态重配置（DRP），ARM 端通过 AXI-Lite 写寄存器 \\
+调压 & PMBus（Linux \texttt{i2c-dev}，Python 脚本），带默认值恢复脚本 \\
+测温 & 片上 SYSMON \\
+控制与采集 & PYNQ（Python）：下发激励、启动测量、读回错误位图 \\
+分析 & NumPy/Pandas：统计每位出错次数与置信区间 \\
+\bottomrule
+\end{tabularx}
+\caption{L1 软件链}
+\end{table}
+
+\subsection{产物}
+\textbf{器件错误库}：按（板卡，电路，$f$，$V$，$T$，激励类型）索引的 I1 记录。
+
+\section{L2 电路层}
+
+\subsection{功能}
+给出近似运算单元（首先是 8 位乘法器）的完整误差描述：
+\begin{itemize}[leftmargin=*]
+  \item 设计引入的近似误差 $e_{\text{approx}}(a,b) = \tilde{m}(a,b) - ab$；
+  \item 在给定 $(f,V,T)$ 下叠加时序错误后的总误差 $e_{\text{total}}(a,b)$；
+  \item 以数据分布为条件的误差矩。
+\end{itemize}
+
+\subsection{输入与输出}
+\begin{itemize}[leftmargin=*]
+  \item \textbf{输入}：I1（如需叠加时序错误）；运算单元的 Verilog 与 C 模型；来自 L4 的数据分布（各网络层权重与激活的直方图）。
+  \item \textbf{输出 I2}：运算单元误差模型，见第~\ref{sec:interfaces} 节。
+\end{itemize}
+
+\subsection{模型路径}
+\begin{itemize}[leftmargin=*]
+  \item 用 C 模型穷举 65536 种输入，得到 $e_{\text{approx}}(a,b)$ 查找表。
+  \item 给定数据分布 $p(a,b)$，计算条件误差矩：
+  \begin{equation}
+  \mu = \sum_{a,b} p(a,b)\,e(a,b),\qquad
+  \sigma^2 = \sum_{a,b} p(a,b)\,\bigl(e(a,b)-\mu\bigr)^2 .
+  \end{equation}
+  \item 时序错误按 I1 的每位出错概率叠加，得到 $e_{\text{total}}$ 的期望与方差的预测。
+\end{itemize}
+
+\subsection{测量路径与软件链}
+\begin{table}[h]
+\centering
+\small
+\begin{tabularx}{\textwidth}{@{}lX@{}}
+\toprule
+环节 & 工具 \\
+\midrule
+单元库 & EvoApprox8b（Verilog 与 C 模型） \\
+硬件穷举测试 & 复用 L1 测试电路；安全频率下穷举 65536 种输入，与 C 模型逐比特比对 \\
+叠加实验 & 在 L1 的扫描点上运行近似单元，测得 $e_{\text{total}}$，检验与预测是否一致 \\
+误差矩计算 & Python（NumPy）；输入 L4 提供的直方图 \\
+\bottomrule
+\end{tabularx}
+\caption{L2 软件链}
+\end{table}
+
+\subsection{产物}
+\textbf{运算单元库}：每个单元一份 $e(a,b)$ 查找表，以及按（数据分布编号，$f$，$V$，$T$）缓存的条件误差矩。
+
+\section{L3 框架层}
+
+\subsection{功能}
+计算误差在加速器与网络中的逐层传播，得到每个网络层输出误差的统计量。需要覆盖：
+\begin{itemize}[leftmargin=*]
+  \item GEMM/卷积中的乘累加：偏置按累加长度 $N$ 线性增长，方差含协方差项；
+  \item 累加器与部分和位宽：截断与饱和；
+  \item 重量化（缩放、舍入、截断）；
+  \item 非线性与结构：ReLU、BatchNorm（推理时折叠）、残差相加、池化、softmax。
+\end{itemize}
+
+\subsection{输入与输出}
+\begin{itemize}[leftmargin=*]
+  \item \textbf{输入}：I2（每个网络层所用运算单元的误差模型）；网络计算图与量化参数；架构参数（阵列尺寸、累加器位宽、数据流）；近似配置（每个网络层用哪种乘法器）。
+  \item \textbf{输出 I3}：网络层误差剖面，见第~\ref{sec:interfaces} 节。
+\end{itemize}
+
+\subsection{三个引擎}
+\begin{table}[h]
+\centering
+\small
+\begin{tabularx}{\textwidth}{@{}lXX@{}}
+\toprule
+引擎 & 做法 & 用途 \\
+\midrule
+解析传播引擎 & 逐层传播误差的均值与方差（含协方差）：线性层精确计算，非线性层用一阶线性化或无迹变换 & 快速预测；设计探索 \\
+仿真引擎 & PyTorch 中用查找表替换乘法（AdaPT 或自写 CUDA 查找表算子），逐比特复现硬件结果 & 真值（不含时序错误） \\
+硬件引擎 & ZCU102 上的 INT8 脉动阵列，乘法器以查找表或真实电路实现；ARM 端逐层调度，DMA 读回每层输出 & 真值（可含时序错误） \\
+\bottomrule
+\end{tabularx}
+\caption{L3 的三个引擎}
+\end{table}
+
+\subsection{软件链}
+\begin{table}[h]
+\centering
+\small
+\begin{tabularx}{\textwidth}{@{}lX@{}}
+\toprule
+环节 & 工具 \\
+\midrule
+模型与量化 & PyTorch；INT8 训练后量化或量化感知训练（PyTorch 量化工具或 Brevitas） \\
+计算图导出 & 从 PyTorch 导出逐层描述（算子类型、形状、量化参数），供解析引擎与硬件调度共用 \\
+解析引擎 & Python（NumPy/PyTorch）实现的矩传播 \\
+仿真引擎 & AdaPT，或自写查找表 GEMM 算子（CUDA） \\
+硬件设计 & Vitis HLS（脉动阵列）、Vivado（集成 DMA 与 AXI 接口） \\
+板上运行 & ZCU102：PetaLinux 或社区 PYNQ 镜像；Python 驱动逐层下发权重与激活并读回结果 \\
+\bottomrule
+\end{tabularx}
+\caption{L3 软件链}
+\end{table}
+
+\section{L4 应用层}
+
+\subsection{功能}
+\begin{enumerate}[leftmargin=*]
+  \item \textbf{质量映射}：把输出层（logits）的误差分布映射为任务质量。对分类任务，一个简单可解释的映射是：样本被误分类的概率约等于误差超过该样本 top-1 与 top-2 logit 间隔的概率；对测试集上的间隔分布求平均，即得精度下降的预测，再用少量实测点标定。
+  \item \textbf{数据分布采集}：在精确模型上运行校准数据，统计每个网络层权重与激活的直方图，提供给 L2 计算条件误差矩。
+  \item \textbf{敏感度分析与设计探索}：估计每个网络层改用近似乘法器对最终质量的影响，在质量约束下选择近似配置。
+\end{enumerate}
+
+\subsection{输入与输出}
+\begin{itemize}[leftmargin=*]
+  \item \textbf{输入}：I3；测试集；质量约束。
+  \item \textbf{输出}：质量预测（如 Top-1 下降及其区间）；推荐的近似配置；发给 L2 的数据分布（反馈）。
+\end{itemize}
+
+\subsection{软件链}
+PyTorch 评估脚本；数据集（CIFAR-10，之后 ImageNet 子集）；标定与设计探索用 Python（SciPy）。
+
+\section{层间接口}
+\label{sec:interfaces}
+
+所有接口产物都包含一个元数据头：产物编号、生成时间、代码版本（git 提交号）、配置文件、上游产物编号。数据部分用 Parquet 存储，元数据用 JSON。
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabularx}{\textwidth}{@{}lXX@{}}
+\toprule
+接口 & 内容 & 键（索引） \\
+\midrule
+I1 器件错误模型 & 每个输出位的出错概率 $P_k$ 与置信区间；（可选）位间出错的相关性 & 板卡、电路、$f$、$V$、$T$、激励类型 \\
+I2 运算单元误差模型 & $e(a,b)$ 查找表（65536 项）；条件误差矩 $\mu$、$\sigma^2$；（可选）按操作数分箱的误差均值 & 单元、数据分布编号、$f$、$V$、$T$ \\
+I3 网络层误差剖面 & 每个网络层输出误差的均值、方差、协方差摘要（如按输出通道的相关系数）；输出层误差分布 & 模型、近似配置、架构参数、I2 编号 \\
+\bottomrule
+\end{tabularx}
+\caption{层间接口定义}
+\end{table}
+
+\paragraph{为什么 I2 要带完整查找表.}
+条件误差矩依赖数据分布，而数据分布由 L4 提供、可能随模型和网络层变化。I2 携带完整的 $e(a,b)$，上层可以针对任意数据分布重算误差矩，避免接口信息不足导致的跨层组合误差。
+
+\section{数据流}
+
+\subsection{预测流（自下而上）}
+给定一个系统配置（频率、电压、每层乘法器、架构参数）：
+\begin{enumerate}[leftmargin=*]
+  \item 从器件错误库取出对应的 I1（缺失时用 L1 模型路径插值）；
+  \item 从运算单元库取出 I2，若该数据分布下的误差矩未缓存则即时计算；
+  \item L3 解析引擎逐层传播，得到 I3；
+  \item L4 映射为质量预测。
+\end{enumerate}
+
+\subsection{测量流（真值）}
+\begin{itemize}[leftmargin=*]
+  \item L1、L2：ZCU104 实测，写入器件错误库与运算单元库。
+  \item L3：仿真引擎或硬件引擎运行同一配置，得到实测 I3。
+  \item L4：在实测输出上计算真实质量。
+\end{itemize}
+
+\subsection{验证流（每个接口对比）}
+在 I1、I2、I3 及最终质量四个位置，比较预测值与实测值，记录偏差。偏差超过阈值时，可定位是哪一层的模型不准，而不是只看到端到端结果不符。
+
+\subsection{反馈流（自上而下）}
+\begin{itemize}[leftmargin=*]
+  \item L4 $\rightarrow$ L2：各网络层的数据分布，用于计算条件误差矩。
+  \item L4 $\rightarrow$ L3：设计探索选出的近似配置。
+  \item （后续）L4 $\rightarrow$ L3：误差感知的重训练或偏置补偿。
+\end{itemize}
+
+\section{代码仓库结构（建议）}
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabularx}{\textwidth}{@{}lX@{}}
+\toprule
+目录 & 内容 \\
+\midrule
+\texttt{common/} & 接口数据结构、元数据、Parquet 读写、配置加载 \\
+\texttt{device/} & L1：扫描控制（MMCM、PMBus、SYSMON）、统计、时序模型拟合 \\
+\texttt{circuit/} & L2：查找表生成、条件误差矩、时序错误叠加 \\
+\texttt{framework/} & L3：计算图导出、解析引擎、仿真引擎、硬件驱动 \\
+\texttt{application/} & L4：质量映射、数据分布采集、敏感度分析与设计探索 \\
+\texttt{hw/} & HLS 与 RTL 源码、Vivado 工程脚本、约束文件 \\
+\texttt{configs/} & 实验配置（YAML） \\
+\texttt{experiments/} & 各阶段实验脚本 \\
+\texttt{data/} & 测量数据与库（不纳入 git） \\
+\texttt{docs/} & 本文档、实验方案、阅读笔记 \\
+\bottomrule
+\end{tabularx}
+\caption{建议的代码仓库结构}
+\end{table}
+
+\section{与实验方案的对应}
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}ll@{}}
+\toprule
+实验阶段 & 本架构中的部分 \\
+\midrule
+阶段 1 器件层时序错误表征 & L1 测量路径，产出器件错误库 \\
+阶段 2 电路层误差表征与叠加 & L2 测量路径，产出运算单元库 \\
+阶段 3 逐层误差传播测量 & L3 硬件引擎与仿真引擎，验证解析引擎 \\
+阶段 4 端到端精度 & L4 质量映射的标定与验证 \\
+阶段 5 跨层组合验证 & 预测流与验证流 \\
+阶段 6 两颗芯片对比 & L1、L2 在两块板上的测量路径 \\
+\bottomrule
+\end{tabular}
+\caption{实验阶段与架构的对应}
+\end{table}
+
+\section{待定事项}
+\begin{enumerate}[leftmargin=*]
+  \item “框架层”是否拆分为“架构层”与“系统框架层”。
+  \item 非线性层的传播方法：一阶线性化、无迹变换，还是二者按层选择。
+  \item I3 中协方差的摘要方式：完整协方差矩阵过大，需要确定保留到什么粒度。
+  \item 是否支持训练阶段的误差传播（近似硬件上的反向传播）。
+\end{enumerate}
+
+\begin{thebibliography}{9}
+\bibitem{vallero2016} A.~Vallero et al. Cross-layer system reliability assessment framework for hardware faults. ITC, 2016. DOI: 10.1109/TEST.2016.7805863.
+\end{thebibliography}
+
+\end{document}
