@@ -1,0 +1,129 @@
+<title>Pelican on a Bicycle</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<style>
+  /* Layout: one centered picture frame, caption beneath, nothing else. */
+  :root {
+    --bg: #eef4f0;
+    --frame: #ffffff;
+    --ink: #2b3a33;
+    --muted: #6b7a72;
+    --accent: #d63b2f;
+    --font-display: "Fredoka", "Trebuchet MS", sans-serif;
+    --font-body: "Nunito", "Segoe UI", sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --bg: #1b2621; --frame: #26332d; --ink: #e8eee9; --muted: #9faea6; --accent: #ff6b5e;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --bg: #1b2621; --frame: #26332d; --ink: #e8eee9; --muted: #9faea6; --accent: #ff6b5e;
+  }
+  body {
+    background: var(--bg); color: var(--ink); font-family: var(--font-body);
+    margin: 0; min-height: 100%;
+    padding-block: 32px;
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+    display: flex; flex-direction: column; align-items: center; gap: 20px;
+  }
+  h1 { font-family: var(--font-display); font-weight: 600; font-size: clamp(1.6rem, 4vw, 2.4rem); margin: 0; text-wrap: balance; }
+  figure { margin: 0; max-width: 720px; width: 100%; background: var(--frame); border-radius: 12px; padding: 16px; box-shadow: 0 6px 24px rgba(0,0,0,.08); }
+  figure svg { display: block; width: 100%; height: auto; border-radius: 6px; }
+  figcaption { margin-top: 12px; color: var(--muted); font-size: 0.95rem; text-align: center; }
+  figcaption b { color: var(--accent); font-weight: 700; }
+</style>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fredoka:wght@600&family=Nunito:wght@400;700&display=swap">
+<h1>Pelican on a Bicycle</h1>
+<figure>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 480 320" >
+  <!-- sky, sun, clouds -->
+  <rect  fill="#bfe3f4"/>
+  <circle cx="405" cy="58" r="26" fill="#ffd45c"/>
+  <g fill="#ffffff" opacity="0.9">
+    <ellipse cx="80" cy="62" rx="30" ry="13"/><ellipse cx="106" cy="54" rx="22" ry="12"/>
+    <ellipse cx="250" cy="42" rx="26" ry="11"/><ellipse cx="272" cy="35" rx="18" ry="10"/>
+  </g>
+  <!-- ground -->
+  <rect y="270" width="480" height="50" fill="#8fc46a"/>
+  <line x1="0" y1="270" x2="480" y2="270" stroke="#6f9f4e" stroke-width="3"/>
+  <!-- motion lines -->
+  <g stroke="#7fb3cc" stroke-width="3" stroke-linecap="round">
+    <line x1="30" y1="200" x2="60" y2="200"/>
+    <line x1="20" y1="222" x2="58" y2="222"/>
+    <line x1="36" y1="244" x2="62" y2="244"/>
+  </g>
+
+  <!-- bicycle -->
+  <g fill="none" stroke="#333" stroke-width="4" stroke-linecap="round" stroke-linejoin="round">
+    <!-- spokes -->
+    <g stroke="#8a8a8a" stroke-width="1.5">
+      <line x1="160" y1="230" x2="80" y2="230"/><line x1="154.6" y1="250" x2="85.4" y2="210"/>
+      <line x1="140" y1="264.6" x2="100" y2="195.4"/><line x1="120" y1="270" x2="120" y2="190"/>
+      <line x1="100" y1="264.6" x2="140" y2="195.4"/><line x1="85.4" y1="250" x2="154.6" y2="210"/>
+      <line x1="370" y1="230" x2="290" y2="230"/><line x1="364.6" y1="250" x2="295.4" y2="210"/>
+      <line x1="350" y1="264.6" x2="310" y2="195.4"/><line x1="330" y1="270" x2="330" y2="190"/>
+      <line x1="310" y1="264.6" x2="350" y2="195.4"/><line x1="295.4" y1="250" x2="364.6" y2="210"/>
+    </g>
+    <!-- tyres and hubs -->
+    <circle cx="120" cy="230" r="40" stroke-width="7"/>
+    <circle cx="330" cy="230" r="40" stroke-width="7"/>
+    <circle cx="120" cy="230" r="5" fill="#333"/>
+    <circle cx="330" cy="230" r="5" fill="#333"/>
+    <!-- chain -->
+    <path d="M120 223 L210 224 M120 237 L210 240" stroke="#888" stroke-width="2"/>
+    <!-- frame -->
+    <g stroke="#d63b2f" stroke-width="5">
+      <polyline points="120,230 190,160 295,165 330,230"/>
+      <polyline points="190,160 210,232 120,230"/>
+      <line x1="295" y1="165" x2="210" y2="232"/>
+      <line x1="190" y1="160" x2="188" y2="146"/>
+      <line x1="295" y1="165" x2="300" y2="144"/>
+    </g>
+    <!-- handlebar and seat -->
+    <line x1="282" y1="145" x2="318" y2="145" stroke-width="5"/>
+    <path d="M170 146 Q188 136 208 146 Q188 154 170 146 Z" fill="#333"/>
+    <!-- cranks and pedals -->
+    <circle cx="210" cy="232" r="9" fill="#555"/>
+    <line x1="210" y1="232" x2="228" y2="246"/>
+    <line x1="210" y1="232" x2="192" y2="218"/>
+    <line x1="220" y1="246" x2="238" y2="246" stroke-width="5"/>
+    <line x1="182" y1="218" x2="200" y2="218" stroke-width="5"/>
+  </g>
+
+  <!-- pelican -->
+  <g stroke="#555" stroke-width="3" stroke-linejoin="round" stroke-linecap="round">
+    <!-- legs (drawn first so the body overlaps them) -->
+    <g fill="none" stroke="#f0a030" stroke-width="6">
+      <path d="M205 140 L218 192 L229 244"/>
+      <path d="M194 140 L186 182 L191 216"/>
+    </g>
+    <!-- webbed feet -->
+    <path d="M218 246 L242 246 L232 256 Z" fill="#f0a030"/>
+    <path d="M180 218 L204 218 L194 228 Z" fill="#f0a030"/>
+    <!-- tail -->
+    <path d="M150 96 L118 82 L126 108 L146 120 Z" fill="#f7f7f7"/>
+    <!-- body -->
+    <ellipse cx="192" cy="112" rx="48" ry="34" fill="#ffffff"/>
+    <!-- neck -->
+    <path d="M224 100 C258 96 272 82 280 60" fill="none" stroke="#555" stroke-width="24"/>
+    <path d="M224 100 C258 96 272 82 280 60" fill="none" stroke="#ffffff" stroke-width="18"/>
+    <!-- wing reaching for the handlebar -->
+    <path d="M196 86 Q262 94 300 138 L292 148 Q242 118 184 108 Z" fill="#f2f2f2"/>
+    <path d="M230 100 L246 126 M250 104 L266 128 M268 112 L282 136" fill="none" stroke="#bbb" stroke-width="2"/>
+    <!-- head -->
+    <circle cx="286" cy="56" r="18" fill="#ffffff"/>
+    <!-- crest feathers -->
+    <path d="M272 44 L262 36 M274 50 L262 46" fill="none" stroke="#555" stroke-width="2.5"/>
+    <!-- beak with pouch -->
+    <path d="M300 58 L372 66 Q340 92 300 68 Z" fill="#f08c2e"/>
+    <path d="M298 50 L374 66 L298 60 Z" fill="#f5a623"/>
+    <!-- eye -->
+    <circle cx="291" cy="50" r="3.5" fill="#222" stroke="none"/>
+    <circle cx="292.5" cy="48.8" r="1.1" fill="#fff" stroke="none"/>
+  </g>
+</svg>
+<figcaption>Hand-placed SVG, 480 × 320 viewBox. One wing on the <b>handlebar</b>, both webbed feet on the pedals.</figcaption>
+</figure>
