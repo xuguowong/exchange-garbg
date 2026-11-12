@@ -1,0 +1,143 @@
+% 编译：xelatex error-propagation-notes.tex（需要 ctex 宏包）
+\documentclass[11pt,a4paper]{ctexart}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs,tabularx}
+\usepackage{enumitem}
+\usepackage[hidelinks]{hyperref}
+\usepackage{xurl}
+
+\title{近似计算中的跨层误差传播：\\近期文献与研究空白}
+\date{2026年11月12日}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+本文梳理近似计算中误差从器件层、电路层、架构/框架层到应用层的传播研究，总结近三年（2023--2026）的代表性工作，并提出十一个研究空白。文献信息多来自 arXiv 预印本和检索摘要，引用前需回原文核对标题、结论与数字。
+\end{abstract}
+
+\section{层次框架}
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabularx}{\textwidth}{@{}lXX@{}}
+\toprule
+层次 & 误差来源 & 向上一层传递的误差模型 \\
+\midrule
+器件层 & 电压超缩（VOS）时序错误、PVT 波动与老化、模拟存内计算（读噪声、IR-drop、ADC）、近似存储（低压 SRAM、降低 DRAM 刷新率） & 各输出位出错概率、噪声分布 \\
+电路层 & 近似加法器/乘法器、近似 softmax/exp/GELU & 误差统计矩（ER、MED、MRED、NMED、偏置、方差）或误差查找表 \\
+架构/框架层 & 加速器数据流、累加长度、累加器与部分和位宽；仿真框架 AdaPT、TFApprox、ApproxTrain、TorchAxf、TransAxx、IBM AIHWKit & 逐层误差注入或解析传播 \\
+应用层 & DNN 精度、图像 PSNR/SSIM、LLM 困惑度、鲁棒性与校准 & --- \\
+\bottomrule
+\end{tabularx}
+\caption{近似计算的跨层误差传播链}
+\end{table}
+
+经典误差传播定律
+\begin{equation}
+\Sigma_y = J\,\Sigma_x\,J^{\mathsf T}
+\end{equation}
+在此对应：近似单元误差的均值与协方差，经 MAC 累加、非线性层和网络深度逐层传递。对长度为 $N$ 的点积 $y=\sum_{i=1}^{N} w_i x_i$，若每次乘法的误差为 $\varepsilon_i$，均值为 $\mu$、方差为 $\sigma^2$，则
+\begin{equation}
+\mathbb{E}[\Delta y] = N\mu,\qquad
+\operatorname{Var}[\Delta y] = N\sigma^2 + \sum_{i\neq j}\operatorname{Cov}(\varepsilon_i,\varepsilon_j).
+\end{equation}
+偏置随 $N$ 线性增长，独立误差的标准差只随 $\sqrt{N}$ 增长；而误差相关时，协方差项不可忽略。这是后文空白 1、2 的出发点。
+
+\section{各层代表工作}
+
+\subsection{器件层 $\rightarrow$ 电路层}
+\begin{itemize}[leftmargin=*]
+  \item LEVAX（TCAD 2019/2020）\cite{levax}：用随机森林预测 VOS 下每个输出位的时序错误率，RMSE 约 1\%，可估计图像处理应用的输出质量。
+  \item TEVoT（DAC 2020）\cite{tevot}：对时序正确/违例做确定性分类，时序错误预测准确率约 98\%，应用质量约 97\%。
+  \item DATE 2017 \cite{date2017vos}：VOS 下算术单元的统计行为模型，面向算法层使用。
+  \item 小结：器件到电路的误差模型主要集中在 2017--2020 年，近三年明显变少。
+\end{itemize}
+
+\subsection{电路层 $\rightarrow$ 应用层（数字近似）}
+\begin{itemize}[leftmargin=*]
+  \item Approximate Multiplier Induced Error Propagation in DNNs（2025）\cite{amierr}：把近似乘法器误差的统计矩解析映射为 GEMM 输出失真（Frobenius 范数，闭式表达式）；发现\textbf{偏置比方差更主导}；预测失真与 ImageNet 级网络的精度下降高度相关，并在 FPGA 上验证。
+  \item DNN 加速器硬件近似综述（2022）\cite{hwapproxsurvey}：在 600 个近似乘法器上，\textbf{方差与 RMS 误差}是 CNN 推理最重要的指标，与上一条结论存在矛盾。
+  \item Brno 组提出 WMED（按应用数据分布加权的 MED），用遗传编程做应用感知的电路近似 \cite{brnowmed}。
+  \item UBC 的统计分布传播方法，可估计级联近似运算后的误差 \cite{ubcprop}。
+  \item 阵列乘法器误差分析 \cite{arraymult}：MED/MRED 会把与输入相关的大误差平均掉。
+  \item EMEI（ISCAS 2024）：基于误差率矩阵的误差注入，用于快速挑选 CNN 加速器的近似乘法器 \cite{emei}。
+  \item 层间异构近似乘法器与信息瓶颈理论（2026）\cite{ibmult}：报告节能最高 44.75\%。
+  \item 近似乘法器重训练的梯度估计方法（2025）\cite{gradest}。
+\end{itemize}
+
+\subsection{器件/电路层 $\rightarrow$ 应用层（模拟存内计算）}
+\begin{itemize}[leftmargin=*]
+  \item IBM Tile-circuit 模型（2025）\cite{ibmtile}：解析建模交叉阵列寄生参数、运放与 ADC 非理想、读噪声；用高斯噪声做硬件感知训练能抵抗 ADC 量化和读噪声，但\textbf{对 IR-drop 效果差}，因为 IR-drop 是非线性的，且依赖所有并行输入。
+  \item Rasch 等（Nature Communications 2023）\cite{rasch2023}：输入/输出噪声比权重噪声对精度的影响更大。
+  \item 清华组 \cite{thuaccuracy}：不切片的精度评估方法，加速最高 105.8$\times$；指出\textbf{权重量化、ADC 误差与器件误差强耦合}，分开分析并不完整。
+\end{itemize}
+
+\subsection{框架层}
+\begin{itemize}[leftmargin=*]
+  \item AdaPT（TCAD 2022）\cite{adapt}、TFApprox/ProxSim、ApproxTrain（GPU 比 CPU 快 2500 倍以上，支持训练）\cite{approxtrain}、TorchAxf（2024，12 个模型）、TransAxx（2024，ViT，用 MCTS 搜索近似配置）\cite{transaxx}。
+  \item 共同点：基于行为级查找表的误差注入（本质是蒙特卡洛仿真），不做解析传播。
+\end{itemize}
+
+\subsection{Transformer 与大语言模型}
+\begin{itemize}[leftmargin=*]
+  \item 近似 softmax/exp：SoftEx \cite{softex}、VEXP \cite{vexp}、ConSmax \cite{consmax}、QuAKE \cite{quake}、存内计算中的查找表 softmax \cite{cimsoftmax}。
+  \item 近似乘法：L-Mul \cite{lmul}、AxCore（MICRO 2025，量化感知近似 GEMM 加误差补偿）\cite{axcore}。
+  \item 共同点：\textbf{只报告端到端精度，没有逐层误差传播分析}。
+\end{itemize}
+
+\subsection{综述}
+\begin{itemize}[leftmargin=*]
+  \item Approximate Computing Survey Part I/II \cite{acsurvey1,acsurvey2}：多数研究只针对单一抽象层，跨层与端到端系统研究不足；缺少有代表性的基准应用与数据集。
+  \item 面向数字信号处理的近似计算综述（《电子与信息学报》2024 年第 5 期）\cite{dspsurvey}。
+\end{itemize}
+
+\section{研究空白}
+
+\begin{enumerate}[leftmargin=*,label=\textbf{\arabic*.}]
+  \item \textbf{偏置与方差谁主导？} 文献 \cite{amierr} 认为偏置主导，文献 \cite{hwapproxsurvey} 认为方差/RMS 主导。可从理论上推导：累加长度 $N$ 下偏置按 $N$、标准差按 $\sqrt{N}$ 增长，再考虑 BatchNorm 对偏置的吸收、ReLU 截断等因素，给出“何时偏置主导”的判据，并用实验验证。
+  \item \textbf{误差相关性被忽略。} 解析模型大多假设各次 MAC 的误差独立，但近似乘法器的误差是操作数的确定性函数，会与权重和激活分布相关。需要协方差感知的传播模型（完整的 $J\Sigma J^{\mathsf T}$），以及按真实数据分布计算的误差统计矩（WMED 思路的推广）。
+  \item \textbf{非线性层中的误差传播缺少分析。} softmax、LayerNorm、GELU、attention 中的误差传播没有解析模型；近似 GEMM 与近似 softmax 叠加后的交互效应尚未研究。
+  \item \textbf{多误差源的耦合。} 量化、近似运算、器件噪声、VOS 时序错误基本分开研究。需要统一的联合误差模型，研究它们何时线性叠加、何时相互放大或抵消。
+  \item \textbf{器件层模型陈旧且与 DNN 脱节。} VOS 时序误差模型集中在 2017--2020 年，以图像处理为主；面向 DNN/LLM 加速器、计入老化与温度、与输入相关的时序误差传播模型很少。
+  \item \textbf{模拟存内计算中的非线性、依赖输入的误差。} IR-drop 无法用加性高斯噪声描述，需要能处理数据相关、非线性误差的传播方法及相应的训练补偿方法。
+  \item \textbf{框架层缺少架构因素和解析传播。} 现有仿真器只在乘法器层面注入误差，忽略数据流、累加顺序、累加器与部分和位宽；且均依赖仿真，解析传播模型尚未集成进设计空间探索。
+  \item \textbf{LLM 自回归解码中的跨 token 误差累积。} 近似硬件引入的误差经 KV cache 逐 token 累积，长文本生成中误差如何增长尚无研究。
+  \item \textbf{训练中的误差传播。} 近似硬件上反向传播的梯度误差如何传播、如何影响收敛，理论很少（ApproxTrain 与梯度估计方法只是起点）。
+  \item \textbf{引入经典不确定性传播方法。} 一阶矩传播、无迹变换、多项式混沌展开等方法几乎未被用于跨层近似误差估计；相比蒙特卡洛仿真，可能带来数量级的加速。
+  \item \textbf{基准与评价指标。} 缺少统一的跨层基准（相同器件模型、电路库与应用集）；应用层指标除精度外，还应覆盖校准、鲁棒性和 LLM 生成质量。
+\end{enumerate}
+
+\begin{thebibliography}{99}
+\bibitem{levax} LEVAX: input-aware learning-based error model of voltage-scaled functional units. IEEE TCAD, 2019/2020. \url{https://eprints.whiterose.ac.uk/159680/8/TCAD2019_LEVAX.pdf}
+\bibitem{tevot} TEVoT: timing error modeling of voltage-scaled circuits. DAC, 2020. \url{https://eprints.whiterose.ac.uk/158883/1/DAC2020_TEVoT_camera_ready.pdf}
+\bibitem{date2017vos} Statistical modeling of arithmetic operators under voltage over-scaling. DATE, 2017. \url{https://past.date-conference.com/proceedings-archive/2017/pdf/7005.pdf}
+\bibitem{amierr} Approximate multiplier induced error propagation in deep neural networks. arXiv:2512.06537, 2025. \url{https://arxiv.org/abs/2512.06537}
+\bibitem{hwapproxsurvey} Hardware approximate techniques for deep neural network accelerators: a survey. ACM Computing Surveys, 2022. arXiv:2203.08737. \url{https://arxiv.org/abs/2203.08737}
+\bibitem{brnowmed} Brno University of Technology, application-aware approximate multipliers with WMED. \url{https://fit.vut.cz/research/publication-file/c161468/187177/08930546.pdf}
+\bibitem{ubcprop} Statistical error propagation through approximate circuits. arXiv:1903.04188. \url{https://arxiv.org/abs/1903.04188}
+\bibitem{arraymult} Error analysis of approximate array multipliers. arXiv:1908.01343. \url{https://arxiv.org/abs/1908.01343}
+\bibitem{emei} EMEI: fast selection of approximate multipliers for CNN accelerators. ISCAS, 2024. \url{https://eprints.soton.ac.uk/488054}
+\bibitem{ibmult} Improving accuracy and efficiency in DNNs with approximate multipliers: insights from information bottleneck theory. AI (MDPI), 2026. \url{https://www.mdpi.com/2673-2688/7/9/385}
+\bibitem{gradest} Gradient estimation methods of approximate multipliers for high-accuracy retraining of deep learning models. arXiv, 2025. \url{https://aitopics.org/doc/arxivorg:03634EA5}
+\bibitem{ibmtile} Rapid yet accurate tile-circuit and device modeling for analog in-memory computing. arXiv:2506.00004, 2025. \url{https://arxiv.org/abs/2506.00004}
+\bibitem{rasch2023} M.\,J. Rasch et al. Hardware-aware training for large-scale and diverse deep learning inference workloads using in-memory computing-based accelerators. Nature Communications, 2023. \url{https://www.ncbi.nlm.nih.gov/pmc/articles/PMC10469175/}
+\bibitem{thuaccuracy} Tsinghua NICS-EFC. Non-slicing accuracy evaluation for analog in-memory computing. \url{https://nicsefc.ee.tsinghua.edu.cn/%2Fnics_file%2Fpdf%2Fad81b36e-96d6-4a96-885e-24c6c0f8a739.pdf}
+\bibitem{adapt} AdaPT: fast emulation of approximate DNN accelerators in PyTorch. IEEE TCAD, 2022. arXiv:2203.04071. \url{https://arxiv.org/abs/2203.04071}
+\bibitem{approxtrain} ApproxTrain: fast simulation of approximate multipliers for DNN training and inference. arXiv:2209.04161. \url{https://arxiv.org/abs/2209.04161}
+\bibitem{transaxx} TransAxx: efficient transformers with approximate computing. arXiv:2402.07545, 2024. \url{https://arxiv.org/abs/2402.07545}
+\bibitem{softex} A flexible template for edge generative AI with high-accuracy accelerated softmax \& GELU. arXiv:2412.06321, 2024. \url{https://arxiv.org/abs/2412.06321}
+\bibitem{vexp} VEXP: a low-cost RISC-V ISA extension for accelerated softmax computation in transformers. arXiv:2504.11227, 2025. \url{https://arxiv.org/abs/2504.11227}
+\bibitem{consmax} ConSmax. arXiv:2402.10930, 2024. \url{https://arxiv.org/abs/2402.10930}
+\bibitem{quake} QuAKE: speeding up model inference using quick and approximate kernels for exponential non-linearities. arXiv:2412.00408, 2024. \url{https://arxiv.org/abs/2412.00408}
+\bibitem{cimsoftmax} LUT-based fixed-point softmax for CIM LLM inference. arXiv:2604.15944, 2026. \url{https://arxiv.org/abs/2604.15944}
+\bibitem{lmul} Addition is all you need for energy-efficient language models. arXiv:2410.00907, 2024. \url{https://arxiv.org/abs/2410.00907}
+\bibitem{axcore} AxCore: quantization-aware approximate GEMM unit for LLM inference. MICRO, 2025. \url{https://soldierchen.github.io/assets/pdf/axcore-micro25.pdf}
+\bibitem{acsurvey1} Approximate computing survey, part I: terminology and software \& hardware approximation techniques. arXiv:2307.11124, 2023. \url{https://arxiv.org/abs/2307.11124}
+\bibitem{acsurvey2} Approximate computing survey, part II: application-specific \& architectural approximation techniques and applications. arXiv:2307.11128, 2023. \url{https://arxiv.org/abs/2307.11128}
+\bibitem{dspsurvey} 面向数字信号处理的近似计算综述. 电子与信息学报, 2024(5). \url{https://www.sciengine.com/doi/pdf/538AD84ACB38464A9A520393E46464C9}
+\end{thebibliography}
+
+\end{document}
